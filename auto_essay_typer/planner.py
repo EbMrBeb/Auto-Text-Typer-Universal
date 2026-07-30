@@ -85,15 +85,9 @@ def plan(
             span = text[start:index]
             if span.strip():
                 actions.append(Pause(rng.uniform(*profile.sentence_pause_ms)))
-                # Pauses are gathered first, then the deletes run back-to-back:
-                # Pause carries no text effect (see simulator.Pause) and the
-                # burst still costs the same total time, but grouping the
-                # Backspace actions makes one revision read as one atomic
-                # correction rather than as len(span) isolated single-character
-                # deletes.
-                pauses = [Pause(timing.backspace_interval_ms()) for _ in range(len(span))]
-                actions.extend(pauses)
-                actions.extend(Backspace(1) for _ in range(len(span)))
+                for _ in range(len(span)):
+                    actions.append(Pause(timing.backspace_interval_ms()))
+                    actions.append(Backspace(1))
                 previous = None
                 for char in span:
                     emit(char, care=profile.retype_care_factor)

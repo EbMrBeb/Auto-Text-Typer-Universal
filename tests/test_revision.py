@@ -1,4 +1,4 @@
-from auto_essay_typer.actions import Backspace
+from auto_essay_typer.actions import Backspace, KeyPress
 from auto_essay_typer.planner import plan
 from auto_essay_typer.profiles import Profile
 from auto_essay_typer.simulator import simulate
@@ -35,11 +35,17 @@ def test_revision_span_respects_configured_word_count():
 
 
 def _backspace_run_lengths(actions) -> list[int]:
+    """Lengths of consecutive backspace bursts.
+
+    A Pause between backspaces does not end a burst -- the planner
+    deliberately interleaves them to produce a realistic deletion rhythm.
+    Only a KeyPress ends a burst.
+    """
     runs, current = [], 0
     for action in actions:
         if isinstance(action, Backspace):
             current += action.count
-        elif current:
+        elif isinstance(action, KeyPress) and current:
             runs.append(current)
             current = 0
     if current:
