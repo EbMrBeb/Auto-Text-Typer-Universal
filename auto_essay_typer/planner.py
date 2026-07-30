@@ -27,6 +27,23 @@ def _word_at(text: str, index: int) -> str:
     return text[index:end]
 
 
+def _revision_span_start(text: str, end: int, words: int) -> int:
+    """Index of the start of the last ``words`` words ending at ``end``.
+
+    Walks backwards over word/space pairs. Never crosses a line break, so a
+    revision stays within the paragraph being written.
+    """
+    index = end
+    for _ in range(words):
+        while index > 0 and text[index - 1].isspace():
+            if text[index - 1] == "\n":
+                return index
+            index -= 1
+        while index > 0 and not text[index - 1].isspace():
+            index -= 1
+    return index
+
+
 def plan(
     text: str,
     profile: Profile | None = None,
@@ -54,6 +71,32 @@ def plan(
         thinking = timing.thinking_pause_ms(previous, _word_at(text, index))
         if thinking > 0.0:
             actions.append(Pause(thinking))
+
+        # A revision fires only at a sentence boundary, once enough text exists
+        # to back over. The span is retyped identically -- wording never changes.
+        if (
+            previous in (" ", None)
+            and index > 0
+            and text[index - 2 : index - 1] in (".", "?", "!")
+            and rng.random() < profile.revision_rate_per_word
+        ):
+            words = rng.randint(*profile.revision_span_words)
+            start = _revision_span_start(text, index, words)
+            span = text[start:index]
+            if span.strip():
+                actions.append(Pause(rng.uniform(*profile.sentence_pause_ms)))
+                # Pauses are gathered first, then the deletes run back-to-back:
+                # Pause carries no text effect (see simulator.Pause) and the
+                # burst still costs the same total time, but grouping the
+                # Backspace actions makes one revision read as one atomic
+                # correction rather than as len(span) isolated single-character
+                # deletes.
+                pauses = [Pause(timing.backspace_interval_ms()) for _ in range(len(span))]
+                actions.extend(pauses)
+                actions.extend(Backspace(1) for _ in range(len(span)))
+                previous = None
+                for char in span:
+                    emit(char, care=profile.retype_care_factor)
 
         typo = None
         if rng.random() < typo_probability:
