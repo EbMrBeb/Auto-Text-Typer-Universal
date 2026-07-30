@@ -1018,7 +1018,7 @@ class TimingModel:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_timing.py -v`
-Expected: 14 passed
+Expected: 15 passed
 
 These are statistical tests with a fixed seed, so they are deterministic. If `test_median_interval_tracks_requested_wpm` fails, check the mu correction in `keystroke_interval_ms` first — forgetting `- sigma**2 / 2` inflates the mean by roughly 6% at sigma 0.35.
 
@@ -1520,7 +1520,7 @@ Rarely, at a sentence boundary, back up over the last few words and retype them.
 `tests/test_revision.py`:
 
 ```python
-from auto_essay_typer.actions import Backspace
+from auto_essay_typer.actions import Backspace, KeyPress
 from auto_essay_typer.planner import plan
 from auto_essay_typer.profiles import Profile
 from auto_essay_typer.simulator import simulate
@@ -1557,11 +1557,18 @@ def test_revision_span_respects_configured_word_count():
 
 
 def _backspace_run_lengths(actions) -> list[int]:
+    """Lengths of consecutive backspace bursts.
+
+    A Pause between backspaces does NOT end a burst -- the planner deliberately
+    interleaves Pause and Backspace to produce a realistic deletion rhythm.
+    Only a KeyPress ends a burst. Ending a run on any non-Backspace action
+    would measure every burst as length 1 and make this test unsatisfiable.
+    """
     runs, current = [], 0
     for action in actions:
         if isinstance(action, Backspace):
             current += action.count
-        elif current:
+        elif isinstance(action, KeyPress) and current:
             runs.append(current)
             current = 0
     if current:
