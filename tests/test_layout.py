@@ -48,3 +48,33 @@ def test_unknown_characters_degrade_gracefully():
 
 def test_space_is_a_thumb_key():
     assert key_info(" ").finger == 5
+
+
+def test_tilde_resolves_to_the_backtick_key():
+    # Regression: _SHIFTED mapped "~" to a key absent from _BASE, raising KeyError.
+    info = key_info("~")
+    assert info is not None
+    assert info.finger == 0
+    assert needs_shift("~") is True
+
+
+def test_backtick_is_modelled():
+    assert key_info("`") is not None
+    assert needs_shift("`") is False
+
+
+def test_backtick_sits_left_of_the_number_one():
+    assert key_info("`").x < key_info("1").x
+
+
+def test_number_row_geometry_is_unshifted_by_the_backtick():
+    # 'q' must remain between '1' and '2' horizontally.
+    assert key_info("1").x < key_info("q").x < key_info("2").x
+
+
+def test_every_shifted_symbol_resolves_to_a_real_key():
+    # Guards the whole class of bug: any _SHIFTED entry pointing at a key
+    # missing from _BASE would crash key_info.
+    for symbol in "!@#$%^&*()_+{}|:\"<>?~":
+        assert key_info(symbol) is not None, f"{symbol!r} does not resolve"
+        assert needs_shift(symbol) is True

@@ -27,3 +27,8 @@ def test_backspace_past_start_is_an_error():
 def test_total_duration_sums_pauses_only():
     actions = [Pause(100.0), KeyPress("a"), Pause(250.5), Backspace(1)]
     assert total_duration_ms(actions) == pytest.approx(350.5)
+
+
+def test_unknown_action_type_is_rejected():
+    with pytest.raises(TypeError, match="unknown action"):
+        simulate([KeyPress("a"), object()])

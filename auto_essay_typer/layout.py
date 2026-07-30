@@ -72,16 +72,30 @@ for _row, _chars in _ROWS.items():
             hand=Hand.LEFT if _finger <= 4 else Hand.RIGHT,
         )
 
+# The backtick is a real key to the left of "1", but it is deliberately not
+# part of _ROWS[0]: prepending it there would shift every column index in the
+# row by one (e.g. "1" would move to x=1.0 while "q" stays at x=0.5, putting
+# "q" left of "1"), corrupting the row's neighbour geometry. It is added here
+# instead, positioned explicitly.
+_BASE["`"] = KeyInfo(char="`", row=0, x=-1.0, finger=0, hand=Hand.LEFT)
+
 # Maximum centre-to-centre distance still counted as "adjacent".
 _ADJACENCY_RADIUS = 1.2
 
 
 def _base_char(char: str) -> str | None:
-    """Return the unshifted key that produces ``char``, or None if unmodelled."""
+    """Return the unshifted key that produces ``char``, or None if unmodelled.
+
+    Every candidate is validated against ``_BASE`` before being returned, so
+    a mismatch between ``_FINGER``/``_SHIFTED`` and ``_ROWS`` (a key referenced
+    by one but never actually added to ``_BASE``) degrades to ``None`` instead
+    of surfacing as a ``KeyError`` in callers.
+    """
     if char in _BASE:
         return char
-    if char in _SHIFTED:
-        return _SHIFTED[char]
+    shifted = _SHIFTED.get(char)
+    if shifted is not None and shifted in _BASE:
+        return shifted
     lowered = char.lower()
     if lowered != char and lowered in _BASE:
         return lowered
