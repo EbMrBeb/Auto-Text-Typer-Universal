@@ -39,6 +39,27 @@ class Typo:
     correct: str
 
 
+def _plausible_slips(char: str, options: list[str]) -> list[str]:
+    """Restrict geometric neighbours to ones a real typist would actually hit.
+
+    ``layout.neighbors`` is purely geometric: it includes the number row as a
+    neighbour of the top letter row, because on a real keyboard it is. But
+    real typists very rarely stray onto the number row mid-word (the reach is
+    longer, and that row is struck far less often while typing prose) or
+    stray onto a letter while typing a number. A digit appearing inside a
+    word reads as a machine artefact and undermines the illusion, even though
+    the slip is geometrically defensible. So a letter source is restricted to
+    letter slips, and a digit source to digit slips. Punctuation and symbols
+    are left unfiltered: those keys genuinely sit beside a mix of letters,
+    digits, and other punctuation, and slipping among them is plausible.
+    """
+    if char.isalpha():
+        return [option for option in options if option.isalpha()]
+    if char.isdigit():
+        return [option for option in options if option.isdigit()]
+    return options
+
+
 def _is_typo_site(text: str, index: int) -> bool:
     """True if a typo may be placed at ``index``.
 
@@ -62,7 +83,7 @@ def _build(kind: TypoKind, text: str, index: int, rng: random.Random) -> Typo | 
                 return None
             return Typo(kind, wrong=nxt + char, correct=char + nxt)
         case TypoKind.SUBSTITUTION:
-            options = layout.neighbors(char)
+            options = _plausible_slips(char, layout.neighbors(char))
             if not options:
                 return None
             return Typo(kind, wrong=rng.choice(options), correct=char)

@@ -95,3 +95,72 @@ def test_every_kind_is_reachable_without_forcing():
     r = random.Random(3)
     kinds = {make_typo("something clever", i % 8, r).kind for i in range(400)}
     assert kinds == set(TypoKind)
+
+
+def test_substitution_on_a_letter_never_produces_a_non_letter_slip():
+    text = "e r d s wordy clever raspy design"
+    for seed in range(50):
+        r = random.Random(seed)
+        for index, char in enumerate(text):
+            if not char.isalpha():
+                continue
+            typo = make_typo(text, index, r, forced_kind=TypoKind.SUBSTITUTION)
+            if typo is not None:
+                assert typo.wrong.isalpha()
+
+
+def test_substitution_on_an_uppercase_letter_yields_an_uppercase_slip():
+    text = "Really Super Discs Extra"
+    found_one = False
+    for seed in range(50):
+        r = random.Random(seed)
+        for index, char in enumerate(text):
+            if not (char.isalpha() and char.isupper()):
+                continue
+            typo = make_typo(text, index, r, forced_kind=TypoKind.SUBSTITUTION)
+            if typo is not None:
+                found_one = True
+                assert typo.wrong.isalpha()
+                assert typo.wrong.isupper()
+    assert found_one
+
+
+def test_substitution_on_a_digit_never_produces_a_letter_slip():
+    text = "call 4567890 now"
+    found_one = False
+    for seed in range(50):
+        r = random.Random(seed)
+        for index, char in enumerate(text):
+            if not char.isdigit():
+                continue
+            typo = make_typo(text, index, r, forced_kind=TypoKind.SUBSTITUTION)
+            if typo is not None:
+                found_one = True
+                assert typo.wrong.isdigit()
+    assert found_one
+
+
+def test_substitution_on_punctuation_keeps_unfiltered_neighbours():
+    # ',' neighbours ['k', 'l', 'm', '.'] -- a mix of letters and punctuation.
+    # Unlike letters/digits, punctuation slips are left unrestricted, so this
+    # should still produce substitutions rather than always falling through
+    # to None.
+    text = "wait, really?"
+    index = text.index(",")
+    hits = 0
+    for seed in range(50):
+        r = random.Random(seed)
+        typo = make_typo(text, index, r, forced_kind=TypoKind.SUBSTITUTION)
+        if typo is not None:
+            hits += 1
+    assert hits > 0
+
+
+def test_e_never_slips_to_4():
+    text = "something clever and rather wordy"
+    index = text.index("e")
+    for seed in range(500):
+        r = random.Random(seed)
+        typo = make_typo(text, index, r, forced_kind=TypoKind.SUBSTITUTION)
+        if typo is not None:
+            assert typo.wrong != "4"
