@@ -3,8 +3,8 @@
 Reading uses the stdlib ``tomllib`` (Python 3.11+), which is read-only, so
 this module also carries a small hand-rolled TOML writer (``_dump_toml``):
 the schema Profile produces is flat and fully known ahead of time (every
-value is a number or a list of numbers), so a third-party TOML-writing
-dependency would be more than the problem calls for.
+value is a bool, a number, or a list of numbers), so a third-party
+TOML-writing dependency would be more than the problem calls for.
 """
 
 from __future__ import annotations
@@ -133,9 +133,14 @@ def apply_overrides(profile: Profile, overrides: Iterable[str]) -> Profile:
 
 
 def _format_toml_value(value: object) -> str:
-    """Render one Profile field value (number or list of numbers) as a TOML literal."""
+    """Render one Profile field value (bool, number, or list of numbers) as a TOML literal.
+
+    ``bool`` is checked before ``int``: ``bool`` is a subclass of ``int``, so
+    testing ``isinstance(value, int)`` first would render ``True``/``False``
+    as ``1``/``0`` instead of TOML's own ``true``/``false`` literals.
+    """
     if isinstance(value, bool):
-        raise TypeError("bool is not a supported Profile field value")
+        return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
@@ -154,10 +159,10 @@ def _format_toml_key(key: str) -> str:
 def _dump_toml(data: Mapping[str, Mapping[str, object]]) -> str:
     """Serialize ``{profile_name: {field: value}}`` to TOML text.
 
-    Deliberately minimal: Profile.to_dict() only ever produces numbers and
-    lists of numbers, so this needs none of the generality (strings,
-    inline tables, dates, multi-line arrays) a general TOML writer would
-    carry. Round-trip correctness through tomllib is what is verified;
+    Deliberately minimal: Profile.to_dict() only ever produces booleans,
+    numbers, and lists of numbers, so this needs none of the generality
+    (strings, inline tables, dates, multi-line arrays) a general TOML writer
+    would carry. Round-trip correctness through tomllib is what is verified;
     formatting is plain.
     """
     lines: list[str] = []

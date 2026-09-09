@@ -122,7 +122,7 @@ def test_from_dict_rejects_wrong_tuple_length():
 def test_field_names_matches_dataclass_fields_dynamically():
     expected = tuple(sorted(f.name for f in dataclasses.fields(Profile)))
     assert field_names() == expected
-    assert len(field_names()) == 19
+    assert len(field_names()) == 26
 
 
 # --- config.load_profiles / save_profile / delete_profile ------------------
@@ -249,3 +249,50 @@ def test_apply_overrides_applies_several_and_leaves_rest_untouched():
     assert updated.typo_rate_per_100 == 0.5
     assert updated.burst_range == base.burst_range
     assert updated.revision_span_words == base.revision_span_words
+
+
+# --- bool field handling (session_breaks) -----------------------------------
+#
+# bool is a subclass of int in Python, so a naive isinstance(x, int) or
+# int(x) coercion path silently mangles it -- and bool("false") is True,
+# since it's a non-empty string. These guard the fix in Profile's coercion
+# helpers and the TOML writer.
+
+
+def test_bool_field_to_dict_keeps_python_bool_type():
+    d = Profile(session_breaks=False).to_dict()
+    assert d["session_breaks"] is False
+    assert isinstance(d["session_breaks"], bool)
+
+
+def test_bool_field_round_trips_through_dict_both_values():
+    for value in (True, False):
+        restored = Profile.from_dict(Profile(session_breaks=value).to_dict())
+        assert restored.session_breaks is value
+
+
+def test_bool_field_round_trips_through_toml_file(config_file):
+    config.save_profile("breaks-off", Profile(session_breaks=False))
+    config.save_profile("breaks-on", Profile(session_breaks=True))
+    loaded = config.load_profiles()
+    assert loaded["breaks-off"].session_breaks is False
+    assert loaded["breaks-on"].session_breaks is True
+
+
+@pytest.mark.parametrize("text", ["true", "True", "TRUE", "yes", "YES", "1"])
+def test_parse_override_accepts_true_bool_strings_case_insensitively(text):
+    key, value = config.parse_override(f"session_breaks={text}")
+    assert key == "session_breaks"
+    assert value is True
+
+
+@pytest.mark.parametrize("text", ["false", "False", "FALSE", "no", "NO", "0"])
+def test_parse_override_accepts_false_bool_strings_case_insensitively(text):
+    key, value = config.parse_override(f"session_breaks={text}")
+    assert key == "session_breaks"
+    assert value is False
+
+
+def test_parse_override_bool_rejects_nonsense_value():
+    with pytest.raises(ValueError, match="session_breaks"):
+        config.parse_override("session_breaks=maybe")

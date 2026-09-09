@@ -94,6 +94,20 @@ class TimingModel:
         """Advance the fatigue clock, e.g. across a long thinking pause."""
         self._elapsed_ms += milliseconds
 
+    def rest(self, milliseconds: float) -> None:
+        """Reduce the fatigue clock by ``milliseconds``, floored at 0.
+
+        A break genuinely refreshes a typist: without this, a break would
+        make the *next* stretch of typing slower rather than faster, which
+        is backwards.
+        """
+        self._elapsed_ms = max(0.0, self._elapsed_ms - milliseconds)
+
+    @property
+    def elapsed_ms(self) -> float:
+        """Read-only view of the fatigue clock, in simulated milliseconds."""
+        return self._elapsed_ms
+
     @property
     def fatigue_multiplier(self) -> float:
         """Slowdown from sustained typing, saturating at ``fatigue_max``."""

@@ -27,6 +27,27 @@ def _word_at(text: str, index: int) -> str:
     return text[index:end]
 
 
+def _at_sentence_or_paragraph_boundary(
+    text: str, index: int, previous: str | None
+) -> bool:
+    """True at the start of a new sentence or paragraph -- the only place a
+    session break may land, so a break never lands mid-word.
+
+    Mirrors the boundary test the revision block uses to find a safe place
+    to back up over already-typed text: ``previous`` is the space (or the
+    ``None`` used right after a reset) that follows sentence-ending
+    punctuation. A paragraph break is simpler -- any newline qualifies,
+    the same boundary ``thinking_pause_ms`` already treats specially.
+    """
+    if previous == "\n":
+        return True
+    return (
+        previous in (" ", None)
+        and index > 0
+        and text[index - 2 : index - 1] in (".", "?", "!")
+    )
+
+
 def _revision_span_start(text: str, end: int, words: int) -> int:
     """Index of the start of the last ``words`` words ending at ``end``.
 
@@ -66,11 +87,33 @@ def plan(
         actions.append(KeyPress(char))
         previous = char
 
+    next_break_at = rng.uniform(*profile.break_interval_ms) if profile.session_breaks else None
+
     index = 0
     while index < len(text):
         thinking = timing.thinking_pause_ms(previous, _word_at(text, index))
         if thinking > 0.0:
             actions.append(Pause(thinking))
+
+        # A session break fires only once enough simulated typing time has
+        # elapsed, and only at a sentence/paragraph boundary -- never
+        # mid-word. It appends nothing but a Pause, so it cannot affect the
+        # simulate(plan(text)) == text invariant.
+        if (
+            next_break_at is not None
+            and timing.elapsed_ms >= next_break_at
+            and _at_sentence_or_paragraph_boundary(text, index, previous)
+        ):
+            if rng.random() < profile.long_break_probability:
+                break_ms = rng.uniform(*profile.long_break_ms)
+            else:
+                break_ms = rng.uniform(*profile.short_break_ms)
+            actions.append(Pause(break_ms))
+            timing.rest(break_ms * profile.break_fatigue_recovery)
+            timing.burst = profile.post_break_burst
+            previous = None
+            next_break_at = timing.elapsed_ms + rng.uniform(*profile.break_interval_ms)
+            continue
 
         # A revision fires only at a sentence boundary, once enough text exists
         # to back over. The span is retyped identically -- wording never changes.

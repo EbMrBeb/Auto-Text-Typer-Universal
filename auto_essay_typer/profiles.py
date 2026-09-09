@@ -40,6 +40,15 @@ class Profile:
     revision_rate_per_word: float = 1.0 / 500.0
     revision_span_words: tuple[int, int] = (2, 5)
 
+    # --- session breaks ---------------------------------------------------
+    session_breaks: bool = True
+    break_interval_ms: tuple[float, float] = (420_000.0, 900_000.0)   # 7-15 min of typing
+    short_break_ms: tuple[float, float] = (20_000.0, 90_000.0)        # 20-90 s away
+    long_break_probability: float = 0.2
+    long_break_ms: tuple[float, float] = (120_000.0, 480_000.0)       # 2-8 min away
+    post_break_burst: float = 0.85     # speed on return; the walk warms back up
+    break_fatigue_recovery: float = 0.6  # fraction of the fatigue clock a break clears
+
     def __post_init__(self) -> None:
         if self.wpm <= 0:
             raise ValueError(f"wpm must be positive, got {self.wpm}")
@@ -50,6 +59,18 @@ class Profile:
         if not 0.0 <= self.hesitation_probability <= 1.0:
             raise ValueError(
                 f"hesitation_probability must be in [0, 1], got {self.hesitation_probability}"
+            )
+        if not 0.0 <= self.long_break_probability <= 1.0:
+            raise ValueError(
+                f"long_break_probability must be in [0, 1], got {self.long_break_probability}"
+            )
+        if not 0.0 <= self.break_fatigue_recovery <= 1.0:
+            raise ValueError(
+                f"break_fatigue_recovery must be in [0, 1], got {self.break_fatigue_recovery}"
+            )
+        if self.post_break_burst <= 0:
+            raise ValueError(
+                f"post_break_burst must be positive, got {self.post_break_burst}"
             )
 
     def with_overrides(self, **changes: object) -> "Profile":
@@ -96,8 +117,39 @@ def _field_map() -> dict[str, Field]:
     return {f.name: f for f in fields(Profile)}
 
 
+_TRUE_STRINGS = frozenset({"true", "yes", "1"})
+_FALSE_STRINGS = frozenset({"false", "no", "0"})
+
+
+def _coerce_bool(raw: object) -> bool:
+    """Coerce a TOML boolean or a CLI override string to ``bool``.
+
+    ``bool`` is a subclass of ``int`` in Python, so a naive ``bool(raw)`` on
+    a non-empty string like ``"false"`` would silently return ``True``.
+    Real booleans (as ``tomllib`` produces for a TOML ``true``/``false``
+    literal) pass through unchanged; strings are parsed explicitly and
+    case-insensitively, accepting ``true/false``, ``yes/no``, ``1/0``.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        key = raw.strip().lower()
+        if key in _TRUE_STRINGS:
+            return True
+        if key in _FALSE_STRINGS:
+            return False
+    raise ValueError(f"cannot parse {raw!r} as bool")
+
+
 def _coerce_scalar(py_type: type, raw: object) -> object:
-    """Coerce one value (a TOML literal or a CLI override string) to ``py_type``."""
+    """Coerce one value (a TOML literal or a CLI override string) to ``py_type``.
+
+    ``bool`` is checked before the generic path: ``bool`` is a subclass of
+    ``int``, so letting a bool-typed field fall through to ``py_type(raw)``
+    would silently mangle it (see ``_coerce_bool``).
+    """
+    if py_type is bool:
+        return _coerce_bool(raw)
     try:
         return py_type(raw)
     except (TypeError, ValueError) as exc:
