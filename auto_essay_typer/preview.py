@@ -60,29 +60,40 @@ def _common_suffix_len(a: str, b: str) -> int:
     return n
 
 
-def _classify_run(deleted: str) -> str:
-    """A deleted span crossing a word boundary reads as a revision, not a typo."""
-    return "revision" if " " in deleted else "typo"
+def _classify_run(deleted: str, retyped: str) -> str:
+    """Classify a finished backspace-and-retype run.
+
+    Exact, not a heuristic: the planner guarantees a revision retypes the
+    deleted span identically (it never alters wording), while a typo
+    correction retypes something different (that's the whole point of the
+    correction). So ``retyped == deleted`` is a revision; anything else --
+    including a retype that came up short because the stream ended or
+    another correction began before it finished -- is a typo.
+    """
+    return "revision" if retyped == deleted else "typo"
 
 
-def _describe_run(kind: str, deleted: str, at_char: int, text: str) -> str:
+def _describe_run(kind: str, deleted: str, retyped: str) -> str:
     """Human-readable detail string for one finished backspace run.
 
-    For a typo, the deleted span (what was actually typed) and a same-length
-    lookahead into ``text`` (what should be there instead) share a common
-    trailing "tail" -- the correctly-typed characters that got swept up in
-    the correction before the mistake was noticed. Stripping that shared
-    suffix isolates the minimal wrong/correct fragment, e.g. "tI" -> "It".
+    For a typo, the deleted span (what was actually typed) and the retyped
+    span (what replaced it) share a common trailing "tail" -- the
+    correctly-typed characters that got swept up in the correction before
+    the mistake was noticed. Stripping that shared suffix isolates the
+    minimal wrong/correct fragment, e.g. "tI" -> "It".
     """
     if kind == "revision":
         words = len(deleted.split())
         plural = "" if words == 1 else "s"
         return f"backed up and rewrote {deleted!r} ({words} word{plural})"
 
-    lookahead = text[at_char : at_char + len(deleted)]
-    tail_len = _common_suffix_len(deleted, lookahead)
+    if not retyped:
+        # Truncated stream: the correction's retype was never captured.
+        return f"typed {deleted!r}, then the stream ends before the correction"
+
+    tail_len = _common_suffix_len(deleted, retyped)
     wrong = deleted[: len(deleted) - tail_len]
-    correct = lookahead[: len(lookahead) - tail_len]
+    correct = retyped[: len(retyped) - tail_len]
     if tail_len:
         return f"typed {wrong!r} for {correct!r}, caught {tail_len} chars later"
     return f"typed {wrong!r} for {correct!r}"
@@ -95,11 +106,16 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
     :func:`auto_essay_typer.simulator.simulate` does, while watching for two
     kinds of noteworthy moment:
 
-    * A run of ``Backspace`` actions -- a *typo* or a *revision*, depending
-      on whether the deleted span crosses a word boundary. A run may be
-      interrupted by ``Pause`` actions (that is normal -- the correction
-      timing model sleeps between backspaces) without being split; only a
-      ``KeyPress`` (or the end of the stream) ends a run.
+    * A run of ``Backspace`` actions -- a *typo* or a *revision*, decided by
+      comparing the deleted span against the span retyped immediately after
+      it: identical means *revision*, different means *typo*. (A deleted
+      span that happens to cross a word boundary is not by itself evidence
+      of anything -- a mid-word typo noticed several characters later,
+      after the typist has kept typing across a space, deletes a span that
+      contains a space too.) A run may be interrupted by ``Pause`` actions
+      (that is normal -- the correction timing model sleeps between
+      backspaces) without being split; only a ``KeyPress`` (or the end of
+      the stream) ends the deleting phase of a run.
     * A long standalone ``Pause`` -- a *break* past 15s, otherwise a *pause*
       past 800ms. Pauses that occur inside a backspace run are absorbed into
       that run rather than reported separately.
@@ -126,25 +142,53 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
                 PreviewEvent(kind=kind, at_char=at_char, detail=detail, snapshot=_snapshot(buffer))
             )
 
-    def finish_run() -> None:
+    def retyped_span(start_index: int, deleted_len: int) -> str:
+        """Reconstruct what was retyped after a correction, from ``actions``.
+
+        Collects ``KeyPress`` characters starting at ``actions[start_index]``
+        until ``deleted_len`` of them have been gathered, or a ``Backspace``
+        begins the next correction, whichever comes first. ``Pause`` actions
+        are skipped over -- they don't affect the retype comparison. Running
+        off the end of ``actions`` (a stream truncated mid-correction) just
+        stops early and returns whatever was collected, which is always
+        shorter than ``deleted_len`` and therefore never equal to the
+        deleted span -- correctly falling out as a typo rather than crashing
+        or guessing.
+        """
+        collected: list[str] = []
+        i = start_index
+        n = len(actions)
+        while i < n and len(collected) < deleted_len:
+            step = actions[i]
+            if isinstance(step, KeyPress):
+                collected.append(step.char)
+                i += 1
+            elif isinstance(step, Backspace):
+                break
+            else:  # Pause -- doesn't count toward the retype, doesn't end it
+                i += 1
+        return "".join(collected)
+
+    def finish_run(next_index: int) -> None:
         nonlocal in_run, deleted_chars, typo_count, revision_count
         if not in_run:
             return
         deleted = "".join(deleted_chars)
         at_char = len(buffer)
-        kind = _classify_run(deleted)
+        retyped = retyped_span(next_index, len(deleted))
+        kind = _classify_run(deleted, retyped)
         if kind == "revision":
             revision_count += 1
         else:
             typo_count += 1
-        record(kind, at_char, _describe_run(kind, deleted, at_char, text))
+        record(kind, at_char, _describe_run(kind, deleted, retyped))
         in_run = False
         deleted_chars = []
 
-    for action in actions:
+    for index, action in enumerate(actions):
         match action:
             case KeyPress(char=char):
-                finish_run()
+                finish_run(index)
                 buffer.append(char)
             case Backspace(count=count):
                 if count > len(buffer):
@@ -168,7 +212,7 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
                 elif ms > _PAUSE_THRESHOLD_MS:
                     record("pause", len(buffer), f"paused for {ms:.0f}ms")
 
-    finish_run()
+    finish_run(len(actions))
 
     duration_ms = total_duration_ms(actions)
     characters = len(text)

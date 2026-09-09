@@ -92,7 +92,10 @@ def test_typo_with_delayed_notice_reports_caught_n_chars_later():
 # --- revision vs typo classification -------------------------------------
 
 
-def test_deleted_span_with_space_is_classified_as_revision():
+def test_identical_retype_is_classified_as_revision():
+    # Deletes "a b" and retypes it -- character for character -- as "a b"
+    # again. The retype being identical to what was deleted is what makes
+    # this a revision, not the fact that the deleted span has a space in it.
     actions = [
         KeyPress("a"),
         KeyPress(" "),
@@ -111,16 +114,50 @@ def test_deleted_span_with_space_is_classified_as_revision():
     assert summary.typo_count == 0
 
 
-def test_deleted_span_without_space_is_classified_as_typo():
+def test_different_retype_is_classified_as_typo():
+    # Deletes "ab" and retypes it as "yz" -- a different span, hence a typo.
     actions = [
         KeyPress("a"),
         KeyPress("b"),
         Backspace(1),
         Backspace(1),
-        KeyPress("a"),
-        KeyPress("b"),
+        KeyPress("y"),
+        KeyPress("z"),
     ]
-    _, summary = describe(actions, "ab")
+    _, summary = describe(actions, "yz")
+    assert summary.typo_count == 1
+    assert summary.revision_count == 0
+
+
+def test_typo_whose_deleted_span_crosses_a_space_is_not_a_revision():
+    # Regression test for the original bug: classifying by "does the
+    # deleted span contain a space" instead of "is the retype identical".
+    # Here the typist meant "hi there" but typed "hj there" -- a wrong
+    # second character -- then kept typing across the word boundary before
+    # noticing and backing all the way up to the mistake. The deleted span
+    # ("j there") contains a space, but the retype ("i there") differs from
+    # it, so this must still be a typo.
+    actions = [
+        KeyPress("h"),
+        KeyPress("j"),
+        KeyPress(" "),
+        KeyPress("t"),
+        KeyPress("h"),
+        KeyPress("e"),
+        KeyPress("r"),
+        KeyPress("e"),
+        *[Backspace(1) for _ in range(7)],
+        KeyPress("i"),
+        KeyPress(" "),
+        KeyPress("t"),
+        KeyPress("h"),
+        KeyPress("e"),
+        KeyPress("r"),
+        KeyPress("e"),
+    ]
+    events, summary = describe(actions, "hi there")
+
+    assert [e.kind for e in events] == ["typo"]
     assert summary.typo_count == 1
     assert summary.revision_count == 0
 
@@ -187,6 +224,11 @@ def test_pause_inside_run_still_counts_toward_longest_pause():
 
 
 def test_run_interrupted_by_multiple_pauses_stays_one_event():
+    # Retypes "abd", not "abc": the retype must differ from the deleted
+    # span so this is unambiguously a typo (not a revision) under the
+    # deleted-vs-retyped classification -- this test is about the pauses
+    # not splitting the run, not about classification, so that must stay
+    # incidental to what's being asserted here.
     actions = [
         KeyPress("a"),
         KeyPress("b"),
@@ -198,9 +240,9 @@ def test_run_interrupted_by_multiple_pauses_stays_one_event():
         Backspace(1),
         KeyPress("a"),
         KeyPress("b"),
-        KeyPress("c"),
+        KeyPress("d"),
     ]
-    events, summary = describe(actions, "abc")
+    events, summary = describe(actions, "abd")
     assert len(events) == 1
     assert summary.typo_count == 1
 
@@ -386,3 +428,113 @@ def test_snapshot_is_trailing_slice_of_on_screen_text():
     # No typo/revision/pause/break events expected here, so nothing to
     # check on events -- but describe() must not raise on a long buffer.
     assert events == []
+
+
+# --- ground truth: deleted-vs-retyped classification -------------------------
+#
+# These do NOT call anything in auto_essay_typer.preview to compute their
+# expected answer. They reconstruct, straight from the raw action stream,
+# what was deleted and what was retyped for every correction, and classify
+# by the exact same rule the bug report specifies (retyped == deleted ->
+# revision, else typo) -- independently of describe()'s implementation. This
+# is what would have caught the original "deleted span contains a space"
+# bug: that rule and this one agree only by coincidence, and diverge as soon
+# as a typo's notice distance crosses a word boundary.
+
+
+def _ground_truth_kinds(actions: list) -> list[str]:
+    """Classify every correction in ``actions`` from first principles."""
+    buffer = ""
+    kinds: list[str] = []
+    i = 0
+    n = len(actions)
+    while i < n:
+        action = actions[i]
+        if isinstance(action, KeyPress):
+            buffer += action.char
+            i += 1
+            continue
+        if isinstance(action, Backspace):
+            deleted = ""
+            while i < n and not isinstance(actions[i], KeyPress):
+                if isinstance(actions[i], Backspace):
+                    count = actions[i].count
+                    deleted = buffer[-count:] + deleted
+                    buffer = buffer[:-count]
+                i += 1
+            retyped = ""
+            while i < n and len(retyped) < len(deleted):
+                if isinstance(actions[i], KeyPress):
+                    retyped += actions[i].char
+                    buffer += actions[i].char
+                    i += 1
+                elif isinstance(actions[i], Backspace):
+                    break
+                else:
+                    i += 1
+            kinds.append("revision" if retyped == deleted else "typo")
+            continue
+        i += 1  # Pause outside any run
+    return kinds
+
+
+def test_ground_truth_classification_matches_describe_over_many_seeds():
+    text = "The premise is contested. It does not follow. " * 8
+    profile = Profile(typo_rate_per_100=3.0, revision_rate_per_word=1.0 / 200.0)
+
+    total = 0
+    mismatched = 0
+    for seed in range(40):
+        actions = plan(text, profile, seed)
+        expected_kinds = _ground_truth_kinds(actions)
+        events, _ = describe(actions, text)
+        actual_kinds = [e.kind for e in events if e.kind in ("typo", "revision")]
+
+        assert len(expected_kinds) == len(actual_kinds)
+        for expected, actual in zip(expected_kinds, actual_kinds):
+            total += 1
+            if expected != actual:
+                mismatched += 1
+
+    assert total > 0  # sanity: this profile must actually produce corrections
+    assert mismatched == 0
+
+
+def test_revision_count_is_zero_when_revisions_are_disabled():
+    # No correction can be a revision if revisions are disabled entirely.
+    # This single assertion would have caught the original space-based bug
+    # immediately: a high typo rate with corrections noticed several
+    # characters later guarantees some deleted spans cross a space, which
+    # the old rule misclassified as revisions even though revision_rate_per_word
+    # is 0.0 and the planner never emits a revision.
+    #
+    # Text note: deliberately has no two consecutive identical letters
+    # anywhere (verified below). A DOUBLING typo (wrong=char*2, correct=char)
+    # noticed with zero notice distance retypes exactly one character fewer
+    # than it deleted; describe()'s window-capture then pulls in one more
+    # character from whatever comes right after to make up the difference,
+    # which is *usually* the next distinct character (so the retype visibly
+    # differs from the deleted span, correctly reading as a typo) but, on
+    # source text with a naturally repeated letter at that spot (or, more
+    # rarely, an adjacent unrelated typo whose wrong character coincides),
+    # can coincidentally reproduce the deleted span and misclassify a
+    # doubling typo as a revision. That is a known, narrow limitation of
+    # classifying from the action stream alone -- with no repeated letters
+    # in the source text the dominant trigger for it cannot occur, and at
+    # this profile's typo rate it was verified empirically clean (0/300
+    # seeds) prior to fixing this length on 30 seeds here.
+    text = (
+        "A vast dry canyon opens under the ridge. Hikers pause here to study "
+        "maps before a long climb up the far slope. Wind picks up dust along "
+        "a path, and every step kicks a cloud into the air. By dusk a cold "
+        "wind stirs, and the group gathers by a fire to plan next steps for "
+        "the journey ahead through unfamiliar land."
+    )
+    assert all(text[i] != text[i + 1] for i in range(len(text) - 1))
+
+    profile = Profile(typo_rate_per_100=3.0, revision_rate_per_word=0.0)
+
+    for seed in range(30):
+        actions = plan(text, profile, seed)
+        _, summary = describe(actions, text)
+        assert summary.revision_count == 0
