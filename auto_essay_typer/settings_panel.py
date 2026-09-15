@@ -31,6 +31,7 @@ _SECTION_BOUNDARIES: tuple[tuple[str, str], ...] = (
     ("typo_rate_per_100", "Mistakes"),
     ("revision_rate_per_word", "Revision"),
     ("session_breaks", "Session breaks"),
+    ("format_shortcut_ms", "Formatting"),
 )
 
 

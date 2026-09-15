@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_essay_typer.actions import Action, Backspace, KeyPress, Pause
+from auto_essay_typer.actions import Action, Backspace, Format, KeyPress, Pause
 from auto_essay_typer.simulator import simulate, total_duration_ms
 
 #: Trailing characters kept in an event's on-screen snapshot.
@@ -45,6 +45,7 @@ class PreviewSummary:
     break_count: int
     longest_pause_ms: float
     matches_input: bool
+    format_count: int = 0
 
 
 def _snapshot(buffer: list[str]) -> str:
@@ -120,10 +121,17 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
       past 800ms. Pauses that occur inside a backspace run are absorbed into
       that run rather than reported separately.
 
+    A ``Format`` action (a Google Docs formatting shortcut) never produces an
+    event of its own and never ends a backspace run -- it is invisible to
+    this trace the same way a ``Pause`` is, since the planner may need to
+    re-apply a run's styles mid-correction (right after the backspaces, right
+    before the retype) and that must still read as one uninterrupted
+    correction. It is only tallied into ``format_count``.
+
     The returned event list is capped at ``_MAX_EVENTS``; the summary counts
-    (``typo_count``, ``revision_count``, ``break_count``) are always tallied
-    over the *entire* stream, so they stay accurate even when the list of
-    events shown is truncated.
+    (``typo_count``, ``revision_count``, ``break_count``, ``format_count``)
+    are always tallied over the *entire* stream, so they stay accurate even
+    when the list of events shown is truncated.
     """
     buffer: list[str] = []
     events: list[PreviewEvent] = []
@@ -131,6 +139,7 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
     typo_count = 0
     revision_count = 0
     break_count = 0
+    format_count = 0
     longest_pause_ms = 0.0
 
     in_run = False
@@ -147,13 +156,13 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
 
         Collects ``KeyPress`` characters starting at ``actions[start_index]``
         until ``deleted_len`` of them have been gathered, or a ``Backspace``
-        begins the next correction, whichever comes first. ``Pause`` actions
-        are skipped over -- they don't affect the retype comparison. Running
-        off the end of ``actions`` (a stream truncated mid-correction) just
-        stops early and returns whatever was collected, which is always
-        shorter than ``deleted_len`` and therefore never equal to the
-        deleted span -- correctly falling out as a typo rather than crashing
-        or guessing.
+        begins the next correction, whichever comes first. ``Pause`` and
+        ``Format`` actions are skipped over -- neither affects the retype
+        comparison. Running off the end of ``actions`` (a stream truncated
+        mid-correction) just stops early and returns whatever was collected,
+        which is always shorter than ``deleted_len`` and therefore never
+        equal to the deleted span -- correctly falling out as a typo rather
+        than crashing or guessing.
         """
         collected: list[str] = []
         i = start_index
@@ -165,7 +174,7 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
                 i += 1
             elif isinstance(step, Backspace):
                 break
-            else:  # Pause -- doesn't count toward the retype, doesn't end it
+            else:  # Pause or Format -- doesn't count toward the retype, doesn't end it
                 i += 1
         return "".join(collected)
 
@@ -211,6 +220,11 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
                     record("break", len(buffer), f"took a break for {ms / 1000:.0f}s")
                 elif ms > _PAUSE_THRESHOLD_MS:
                     record("pause", len(buffer), f"paused for {ms:.0f}ms")
+            case Format():
+                # Never ends a run (a correction may need to re-apply a run's
+                # styles between its backspaces and its retype) and never
+                # produces an event of its own -- only tallied below.
+                format_count += 1
 
     finish_run(len(actions))
 
@@ -230,5 +244,6 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
         break_count=break_count,
         longest_pause_ms=longest_pause_ms,
         matches_input=matches_input,
+        format_count=format_count,
     )
     return events, summary

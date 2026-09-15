@@ -35,7 +35,7 @@ from auto_essay_typer.app import (
     profile_from_settings,
 )
 from auto_essay_typer.actions import KeyPress, Pause
-from auto_essay_typer.profiles import PRESETS, Profile
+from auto_essay_typer.profiles import PRESETS, Profile, field_names
 
 
 @pytest.fixture(scope="session")
@@ -147,13 +147,15 @@ def test_app_builds(app):
     assert app.advanced_visible is False
 
 
-def test_settings_panel_has_all_26_profile_fields(app):
+def test_settings_panel_has_all_profile_fields(app):
+    # Derived from field_names() rather than a hardcoded count, so adding a
+    # knob to Profile never breaks this test.
     panel = app.settings_panel
     total = len(panel._scalar_vars) + len(panel._bool_vars) + len(panel._tuple_vars)
-    assert total == 26
+    assert total == len(field_names())
 
 
-def test_settings_panel_groups_fields_into_five_labelled_sections():
+def test_settings_panel_groups_fields_into_labelled_sections():
     # Regression test: _SECTION_BOUNDARIES pairs must read as
     # (field_name, label) -- swapped order silently collapses every field
     # into a single mislabelled section (caught during development).
@@ -166,13 +168,15 @@ def test_settings_panel_groups_fields_into_five_labelled_sections():
         "Mistakes",
         "Revision",
         "Session breaks",
+        "Formatting",
     ]
-    assert sum(len(fields) for _, fields in sections) == 26
+    assert sum(len(fields) for _, fields in sections) == len(field_names())
     # A couple of fields that must land in a specific section.
     by_label = {label: [f.name for f in fields] for label, fields in sections}
     assert "wpm" in by_label["Speed"]
     assert "session_breaks" in by_label["Session breaks"]
     assert "revision_span_words" in by_label["Revision"]
+    assert "format_shortcut_ms" in by_label["Formatting"]
 
 
 # --- settings panel round trip --------------------------------------------------

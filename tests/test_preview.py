@@ -14,7 +14,7 @@ import dataclasses
 
 import pytest
 
-from auto_essay_typer.actions import Backspace, KeyPress, Pause
+from auto_essay_typer.actions import Backspace, Format, FormatOp, KeyPress, Pause
 from auto_essay_typer.planner import plan
 from auto_essay_typer.preview import PreviewEvent, PreviewSummary, describe
 from auto_essay_typer.profiles import Profile
@@ -410,6 +410,7 @@ def test_preview_summary_fields():
         "break_count",
         "longest_pause_ms",
         "matches_input",
+        "format_count",
     }
 
 
@@ -538,3 +539,98 @@ def test_revision_count_is_zero_when_revisions_are_disabled():
         actions = plan(text, profile, seed)
         _, summary = describe(actions, text)
         assert summary.revision_count == 0
+
+
+# --- Format: counted, never crashes, never splits a correction ---------------
+
+
+def test_format_action_does_not_crash_describe():
+    actions = [Format(FormatOp.CLEAR_FORMATTING), KeyPress("a")]
+    events, summary = describe(actions, "a")
+    assert events == []
+    assert summary.format_count == 1
+
+
+def test_format_count_tallies_every_format_action():
+    actions = [
+        Format(FormatOp.CLEAR_FORMATTING),
+        KeyPress("a"),
+        Format(FormatOp.TOGGLE_BOLD),
+        KeyPress("b"),
+        Format(FormatOp.TOGGLE_ITALIC),
+    ]
+    _, summary = describe(actions, "ab")
+    assert summary.format_count == 3
+
+
+def test_format_count_is_zero_with_no_format_actions():
+    _, summary = describe([KeyPress("a")], "a")
+    assert summary.format_count == 0
+
+
+def test_format_between_backspaces_and_retype_does_not_split_a_typo_correction():
+    # Typed "ac" (transposed), noticed immediately; a Format sits between the
+    # backspaces and the retype -- exactly where the planner re-applies a
+    # run's styles after a correction crosses into a previous run (section 5
+    # of the shared contract). This must still read as ONE typo event.
+    actions = [
+        KeyPress("a"),
+        KeyPress("c"),
+        Backspace(1),
+        Backspace(1),
+        Format(FormatOp.TOGGLE_BOLD),
+        KeyPress("c"),
+        KeyPress("a"),
+        KeyPress("t"),
+    ]
+    events, summary = describe(actions, "cat")
+    assert [e.kind for e in events] == ["typo"]
+    assert summary.typo_count == 1
+    assert summary.format_count == 1
+
+
+def test_format_between_backspaces_and_retype_does_not_split_a_revision():
+    actions = [
+        KeyPress("a"),
+        KeyPress(" "),
+        KeyPress("b"),
+        Backspace(1),
+        Backspace(1),
+        Backspace(1),
+        Format(FormatOp.TOGGLE_ITALIC),
+        KeyPress("a"),
+        KeyPress(" "),
+        KeyPress("b"),
+    ]
+    events, summary = describe(actions, "a b")
+    assert [e.kind for e in events] == ["revision"]
+    assert summary.revision_count == 1
+    assert summary.format_count == 1
+
+
+def test_multiple_formats_between_backspaces_and_retype_still_one_correction():
+    actions = [
+        KeyPress("a"),
+        KeyPress("c"),
+        Backspace(1),
+        Backspace(1),
+        Format(FormatOp.TOGGLE_BOLD),
+        Format(FormatOp.TOGGLE_ITALIC),
+        KeyPress("c"),
+        KeyPress("a"),
+        KeyPress("t"),
+    ]
+    events, summary = describe(actions, "cat")
+    assert len(events) == 1
+    assert summary.format_count == 2
+
+
+def test_format_outside_any_run_produces_no_event():
+    events, _ = describe([Format(FormatOp.CLEAR_FORMATTING)], "")
+    assert events == []
+
+
+def test_format_does_not_affect_matches_input():
+    actions = [Format(FormatOp.CLEAR_FORMATTING), KeyPress("h"), KeyPress("i")]
+    _, summary = describe(actions, "hi")
+    assert summary.matches_input is True

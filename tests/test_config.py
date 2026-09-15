@@ -120,9 +120,11 @@ def test_from_dict_rejects_wrong_tuple_length():
 
 
 def test_field_names_matches_dataclass_fields_dynamically():
+    # Derived from dataclasses.fields(Profile) directly rather than a
+    # hardcoded count, so adding a knob to Profile never breaks this test.
     expected = tuple(sorted(f.name for f in dataclasses.fields(Profile)))
     assert field_names() == expected
-    assert len(field_names()) == 26
+    assert len(field_names()) == len(expected)
 
 
 # --- config.load_profiles / save_profile / delete_profile ------------------

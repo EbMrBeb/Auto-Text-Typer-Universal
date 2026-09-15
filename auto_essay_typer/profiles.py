@@ -57,6 +57,11 @@ class Profile:
     post_break_burst: float = 1.15
     break_fatigue_recovery: float = 0.6  # fraction of the fatigue clock a break clears
 
+    # --- formatting --------------------------------------------------------
+    # How long a Format action (a Google Docs keyboard shortcut like cmd+b)
+    # takes to press -- reaching for a chord is slower than a plain keystroke.
+    format_shortcut_ms: tuple[float, float] = (180.0, 520.0)
+
     def __post_init__(self) -> None:
         if self.wpm <= 0:
             raise ValueError(f"wpm must be positive, got {self.wpm}")
@@ -79,6 +84,15 @@ class Profile:
         if self.post_break_burst <= 0:
             raise ValueError(
                 f"post_break_burst must be positive, got {self.post_break_burst}"
+            )
+        format_low, format_high = self.format_shortcut_ms
+        if format_low < 0:
+            raise ValueError(
+                f"format_shortcut_ms low must be non-negative, got {format_low}"
+            )
+        if format_low > format_high:
+            raise ValueError(
+                f"format_shortcut_ms low must be <= high, got {self.format_shortcut_ms}"
             )
 
     def with_overrides(self, **changes: object) -> "Profile":
