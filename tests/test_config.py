@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from auto_essay_typer import config
+from auto_essay_typer import config, platforms
+from auto_essay_typer.platforms import OperatingSystem
 from auto_essay_typer.profiles import PRESETS, Profile, field_names
 
 CUSTOM = Profile(
@@ -45,34 +46,92 @@ def config_file(tmp_path, monkeypatch):
     """Point AUTO_ESSAY_TYPER_CONFIG at an isolated tmp_path file.
 
     Every config.* call in this module must go through this override so the
-    tests can never touch the user's real ~/.config/auto-essay-typer.
+    tests can never touch the user's real ~/.config/auto-essay-typer. Since
+    load_profiles() now falls back to the *legacy* config file when the
+    override path doesn't exist, Path.home() and XDG_CONFIG_HOME are also
+    sandboxed here -- otherwise a machine that happens to have a real
+    ~/.config/auto-essay-typer/profiles.toml would make these tests see it.
     """
     path = tmp_path / "profiles.toml"
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
     monkeypatch.setenv("AUTO_ESSAY_TYPER_CONFIG", str(path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "sandboxed-home")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return path
 
 
 # --- config_path ------------------------------------------------------------
 
 
-def test_config_path_honours_override_env(tmp_path, monkeypatch):
+def test_config_path_honours_new_override_env(tmp_path, monkeypatch):
     override = tmp_path / "custom.toml"
+    monkeypatch.setenv("AUTO_TEXT_TYPER_CONFIG", str(override))
+    assert config.config_path() == override
+
+
+def test_config_path_honours_legacy_override_env_for_compatibility(tmp_path, monkeypatch):
+    # AUTO_ESSAY_TYPER_CONFIG (the pre-rename name) must keep working
+    # indefinitely for anyone who set it in a script before the rename.
+    override = tmp_path / "custom.toml"
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
     monkeypatch.setenv("AUTO_ESSAY_TYPER_CONFIG", str(override))
     assert config.config_path() == override
 
 
-def test_config_path_honours_xdg_config_home(tmp_path, monkeypatch):
-    monkeypatch.delenv("AUTO_ESSAY_TYPER_CONFIG", raising=False)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert config.config_path() == tmp_path / "auto-essay-typer" / "profiles.toml"
+def test_config_path_new_override_env_wins_over_legacy_override_env(tmp_path, monkeypatch):
+    new = tmp_path / "new.toml"
+    old = tmp_path / "old.toml"
+    monkeypatch.setenv("AUTO_TEXT_TYPER_CONFIG", str(new))
+    monkeypatch.setenv("AUTO_ESSAY_TYPER_CONFIG", str(old))
+    assert config.config_path() == new
 
 
-def test_config_path_defaults_under_home_config(monkeypatch):
+# config_path() with no override delegates to platforms.config_dir(), which
+# is already exhaustively tested per-OS in tests/test_platforms.py -- these
+# just confirm the delegation itself, forcing the OS via monkeypatch so the
+# result is deterministic regardless of which machine runs the suite, and
+# never touching the real home directory.
+
+
+def test_config_path_defaults_to_platform_config_dir_on_macos(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
     monkeypatch.delenv("AUTO_ESSAY_TYPER_CONFIG", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.MACOS)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     assert (
         config.config_path()
-        == Path.home() / ".config" / "auto-essay-typer" / "profiles.toml"
+        == tmp_path / "home" / "Library" / "Application Support" / "Auto Text Typer" / "profiles.toml"
+    )
+
+
+def test_config_path_defaults_to_platform_config_dir_on_windows(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
+    monkeypatch.delenv("AUTO_ESSAY_TYPER_CONFIG", raising=False)
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.WINDOWS)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    assert (
+        config.config_path()
+        == tmp_path / "AppData" / "Roaming" / "Auto Text Typer" / "profiles.toml"
+    )
+
+
+def test_config_path_defaults_to_platform_config_dir_on_linux_with_xdg(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
+    monkeypatch.delenv("AUTO_ESSAY_TYPER_CONFIG", raising=False)
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.LINUX)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config.config_path() == tmp_path / "auto-text-typer" / "profiles.toml"
+
+
+def test_config_path_defaults_to_platform_config_dir_on_linux_without_xdg(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTO_TEXT_TYPER_CONFIG", raising=False)
+    monkeypatch.delenv("AUTO_ESSAY_TYPER_CONFIG", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.LINUX)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    assert (
+        config.config_path()
+        == tmp_path / "home" / ".config" / "auto-text-typer" / "profiles.toml"
     )
 
 
@@ -131,6 +190,9 @@ def test_field_names_matches_dataclass_fields_dynamically():
 
 
 def test_missing_config_file_returns_empty_dict(config_file):
+    # The config_file fixture also sandboxes the legacy-file fallback (see
+    # its docstring), so this exercises "neither new nor legacy file exists"
+    # -- not just "new file missing".
     assert config.load_profiles() == {}
 
 
@@ -298,3 +360,84 @@ def test_parse_override_accepts_false_bool_strings_case_insensitively(text):
 def test_parse_override_bool_rejects_nonsense_value():
     with pytest.raises(ValueError, match="session_breaks"):
         config.parse_override("session_breaks=maybe")
+
+
+# --- legacy config migration --------------------------------------------------
+#
+# "Legacy" here means the pre-rename file at platforms.legacy_config_file()
+# (old app name, old default directory). These tests simulate an existing
+# legacy install by writing to that path explicitly (via save_profile's
+# `path` parameter, so the file is produced by the exact same serializer a
+# real legacy install would have used) and then exercising the new default
+# location through config_file's sandboxed AUTO_ESSAY_TYPER_CONFIG override.
+
+
+def test_load_profiles_falls_back_to_legacy_file_when_new_file_is_missing(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("mine", CUSTOM, path=legacy)
+
+    assert not config_file.exists()
+    loaded = config.load_profiles()
+    assert loaded["mine"] == CUSTOM
+
+
+def test_load_profiles_ignores_legacy_file_once_new_file_exists(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("mine", PRESETS["clean"], path=legacy)
+    config.save_profile("mine", PRESETS["sloppy"])  # writes to the new location
+
+    loaded = config.load_profiles()
+    assert loaded["mine"] == PRESETS["sloppy"]
+
+
+def test_save_profile_migrates_legacy_profiles_into_new_location(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("old", PRESETS["clean"], path=legacy)
+
+    config.save_profile("new", PRESETS["sloppy"])
+
+    assert config_file.exists()
+    loaded = config.load_profiles(config_file)
+    assert loaded["old"] == PRESETS["clean"]
+    assert loaded["new"] == PRESETS["sloppy"]
+
+
+def test_save_profile_never_modifies_the_legacy_file(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("old", PRESETS["clean"], path=legacy)
+    legacy_text_before = legacy.read_text(encoding="utf-8")
+
+    config.save_profile("new", PRESETS["sloppy"])
+
+    assert legacy.read_text(encoding="utf-8") == legacy_text_before
+
+
+def test_delete_profile_migrates_legacy_profiles_into_new_location(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("keep", PRESETS["clean"], path=legacy)
+    config.save_profile("drop", PRESETS["sloppy"], path=legacy)
+
+    assert config.delete_profile("drop") is True
+
+    assert config_file.exists()
+    loaded = config.load_profiles(config_file)
+    assert loaded == {"keep": PRESETS["clean"]}
+
+
+def test_delete_profile_never_modifies_the_legacy_file(config_file):
+    legacy = platforms.legacy_config_file()
+    config.save_profile("drop", PRESETS["clean"], path=legacy)
+    legacy_text_before = legacy.read_text(encoding="utf-8")
+
+    config.delete_profile("drop")
+
+    assert legacy.read_text(encoding="utf-8") == legacy_text_before
+
+
+def test_legacy_config_file_matches_the_documented_old_default_location(config_file):
+    # Regression guard for the migration path itself: the legacy location
+    # must still be the exact pre-rename default (old app name, old XDG
+    # dir), or an upgrading user's real file would never be found.
+    legacy = platforms.legacy_config_file()
+    assert legacy.parent.name == "auto-essay-typer"
+    assert legacy.name == "profiles.toml"
