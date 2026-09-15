@@ -179,6 +179,53 @@ def test_drive_file_returning_docx_bytes_gets_parsed_as_docx():
     assert warnings == ()
 
 
+def test_drive_file_returning_a_zip_that_is_not_a_docx_is_unsupported():
+    """A zip Drive genuinely serves (e.g. a plain .zip upload) but that has
+    no word/document.xml inside must not be mistaken for a Word document."""
+    import zipfile
+    from io import BytesIO
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("readme.txt", "just a regular zip file")
+
+    def fetch(url: str) -> FetchResult:
+        return FetchResult(data=buf.getvalue(), content_type="application/zip", final_url=url)
+
+    with pytest.raises(UnsupportedSourceError):
+        load_from_google("https://drive.google.com/file/d/driveid1/view", fetch=fetch)
+
+
+def test_drive_file_with_zip_magic_bytes_but_corrupt_body_is_treated_as_not_docx():
+    """Bytes that merely start with the zip signature but are not a valid
+    zip archive must be handled gracefully, not raise a raw BadZipFile."""
+
+    def fetch(url: str) -> FetchResult:
+        return FetchResult(
+            data=b"PK\x03\x04" + b"not actually valid zip content after the signature",
+            content_type="application/zip",
+            final_url=url,
+        )
+
+    with pytest.raises(UnsupportedSourceError):
+        load_from_google("https://drive.google.com/file/d/driveid1/view", fetch=fetch)
+
+
+def test_doc_html_with_invalid_utf8_bytes_is_decoded_with_replacement():
+    """A malformed byte sequence in the fetched HTML must not crash the
+    import -- it is replaced, since a best-effort import beats a traceback."""
+
+    def fetch(url: str) -> FetchResult:
+        return FetchResult(
+            data=b"<html><body><p>bad byte: \xff\xfe here</p></body></html>",
+            content_type="text/html",
+            final_url=url,
+        )
+
+    doc, _ = load_from_google("https://docs.google.com/document/d/abc123/edit", fetch=fetch)
+    assert "bad byte:" in doc.plain_text()
+
+
 def test_drive_file_returning_unrecognised_html_is_unsupported():
     def fetch(url: str) -> FetchResult:
         return FetchResult(
