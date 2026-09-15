@@ -203,7 +203,11 @@ def _type_segment(
         # Backspacing resets the digraph context: the last key struck was not
         # a character key.
         previous = None
-        if index == 0 and on_backspace_to_start is not None:
+        # A zero-backspace correction (an omission typo noticed with zero
+        # notice distance) never actually typed or removed anything, so it
+        # never touched the model even when index == 0 -- only a *real*
+        # backspace run can have exposed the previous run's styles.
+        if index == 0 and backspaces > 0 and on_backspace_to_start is not None:
             on_backspace_to_start()
         for char in retype:
             emit(char, care=profile.retype_care_factor)
