@@ -8,7 +8,9 @@ Three effects stack to produce the timing signature of a real typist:
 2. **Digraph multipliers** from the physical layout -- same-finger pairs are
    slow, alternating-hand pairs are fast.
 3. A **mean-reverting burst walk**, which produces stretches of fast and slow
-   typing rather than per-character white noise.
+   typing rather than per-character white noise. The walk's value multiplies
+   the keystroke interval directly, so this is an *interval* scale, not a
+   speed: values above 1.0 slow typing down, values below 1.0 speed it up.
 
 On top of those sit thinking pauses at sentence, clause, and paragraph
 boundaries.
@@ -123,6 +125,19 @@ class TimingModel:
         shock = self._rng.gauss(0.0, self.profile.burst_sigma)
         self.burst = min(high, max(low, self.burst + drift + shock))
         return self.burst
+
+    def reset_burst(self, value: float) -> None:
+        """Set the burst-walk state to ``value``, clamped into ``burst_range``.
+
+        Used when resuming from a break: ``post_break_burst`` is a
+        standalone field, so a hand-edited config could set it outside the
+        profile's own ``burst_range`` and desync the walk -- clamping here
+        keeps the invariant (``low <= burst <= high``) intact at the moment
+        of assignment rather than relying on the next ``_step_burst`` call
+        to pull it back in.
+        """
+        low, high = self.profile.burst_range
+        self.burst = min(high, max(low, value))
 
     # -- sampling ---------------------------------------------------------
 

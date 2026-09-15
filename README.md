@@ -226,7 +226,7 @@ long_break_probability = 0.2
 long_word_threshold = 9
 oh_moment_ms = [150.0, 400.0]
 paragraph_pause_ms = [1500.0, 5000.0]
-post_break_burst = 0.85
+post_break_burst = 1.15
 retype_care_factor = 1.15
 revision_rate_per_word = 0.002
 revision_span_words = [2, 5]
@@ -305,7 +305,7 @@ uniformly unless noted otherwise.
 | `short_break_ms` | `(20000.0, 90000.0)` (20–90 s) | Duration of an ordinary break. |
 | `long_break_probability` | `0.2` | Chance that a given break is a long one instead of a short one. |
 | `long_break_ms` | `(120000.0, 480000.0)` (2–8 min) | Duration of a long break. |
-| `post_break_burst` | `0.85` | Burst-walk value set on return from a break — below the walk's neutral 1.0, so the next stretch of typing starts a little quick and eases back to normal. |
+| `post_break_burst` | `1.15` | Burst-walk value set on return from a break. This multiplies the keystroke interval directly, so **values above 1.0 are slower, below 1.0 faster** — the default sits above the walk's neutral 1.0 so the next stretch of typing starts with a re-entry dip and eases back to normal. Clamped into `burst_range` when applied. |
 | `break_fatigue_recovery` | `0.6` | Fraction of the accumulated fatigue clock that a break clears. |
 
 ## Presets
@@ -392,13 +392,18 @@ mid-word — so it stays purely an extra `Pause` and can never disturb the
 
 A break also partially recovers fatigue (`break_fatigue_recovery`, 60% of the
 accumulated fatigue clock by default) and resets the burst-walk multiplier to
-`post_break_burst` (0.85 by default — below the walk's neutral value of 1.0).
-Concretely, this means the stretch right after a break resumes at a slightly
-*quicker* clip than a same-length stretch without a break would have, and
-then eases back toward the normal rhythm as the burst walk mean-reverts
-toward 1.0 over the following keystrokes; `tests/test_session_breaks.py`
-verifies this directly by comparing median keystroke intervals just before
-and just after a break. This is why an unbroken 40-minute typing session is
+`post_break_burst` (1.15 by default, clamped into `burst_range` — above the
+walk's neutral value of 1.0, since the burst multiplier scales the keystroke
+interval directly and so a value above 1.0 is *slower*). Concretely, this
+means the stretch right after a break resumes at a *dip*: a real typist
+re-reads the last sentence and re-orients before getting going again, rather
+than instantly speeding up. The burst walk then mean-reverts back toward 1.0
+over the following keystrokes, and because fatigue was also partially
+cleared, the typist ends up at or above their pre-break pace once the dip
+has worn off. `tests/test_session_breaks.py` verifies this directly by
+comparing median keystroke intervals immediately after a break (slower) and
+further after the break, once the burst walk has settled (at least as fast).
+This is why an unbroken 40-minute typing session is
 itself a tell: the whole point of `session_breaks` is that real attention
 wanders and real hands get tired, so a long stretch with no pause longer than
 a sentence-thinking pause reads as mechanical regardless of how realistic the

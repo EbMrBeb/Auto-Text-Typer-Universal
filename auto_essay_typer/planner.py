@@ -110,7 +110,7 @@ def plan(
                 break_ms = rng.uniform(*profile.short_break_ms)
             actions.append(Pause(break_ms))
             timing.rest(break_ms * profile.break_fatigue_recovery)
-            timing.burst = profile.post_break_burst
+            timing.reset_burst(profile.post_break_burst)
             previous = None
             next_break_at = timing.elapsed_ms + rng.uniform(*profile.break_interval_ms)
             continue

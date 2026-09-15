@@ -46,7 +46,15 @@ class Profile:
     short_break_ms: tuple[float, float] = (20_000.0, 90_000.0)        # 20-90 s away
     long_break_probability: float = 0.2
     long_break_ms: tuple[float, float] = (120_000.0, 480_000.0)       # 2-8 min away
-    post_break_burst: float = 0.85     # speed on return; the walk warms back up
+    # Burst-walk value set on return from a break. This is an INTERVAL
+    # multiplier, not a speed: values ABOVE 1.0 make typing SLOWER, values
+    # BELOW 1.0 make it FASTER. Default sits above the burst walk's neutral
+    # 1.0 so a resumed session starts with a re-entry dip (re-reading,
+    # re-orienting) rather than an instant speed-up; the mean-reverting walk
+    # then carries the multiplier back toward 1.0 over the following
+    # keystrokes, while break_fatigue_recovery (below) supplies the real
+    # recovery by partially clearing the fatigue clock.
+    post_break_burst: float = 1.15
     break_fatigue_recovery: float = 0.6  # fraction of the fatigue clock a break clears
 
     def __post_init__(self) -> None:
