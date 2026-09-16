@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  # Auto Text Typer's real Qt GUI (auto_essay_typer.gui) does not exist
+  # yet, so every build job below packages the packaging spike
+  # (packaging/spike_app.py) instead, to prove PyInstaller packaging
+  # itself works end to end on all three platforms.
+  #
+  # Once the real GUI ships, switch this single line to:
+  #   ATT_ENTRY: packaging/launch_gui.py
+  ATT_ENTRY: packaging/spike_app.py
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Build (try universal2, fall back to arm64)
+        id: build
+        run: |
+          set -euo pipefail
+          if ATT_TARGET_ARCH=universal2 packaging/build_macos.sh; then
+            echo "arch=universal2" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::universal2 build failed (a bundled binary is likely not a universal2 fat binary -- see the PyInstaller output above for which one); falling back to arm64"
+            ATT_TARGET_ARCH=arm64 packaging/build_macos.sh
+            echo "arch=arm64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify architecture(s) with lipo
+        run: lipo -archs "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer"
+
+      - name: Self-test the built app
+        run: |
+          "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer" --self-test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ steps.build.outputs.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Ensure Inno Setup (iscc) is installed
+        shell: pwsh
+        run: |
+          $onPath = Get-Command iscc -ErrorAction SilentlyContinue
+          $wellKnown = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ }
+          if (-not $onPath -and -not $wellKnown) {
+            choco install innosetup -y
+          }
+
+      - name: Build
+        shell: pwsh
+        run: packaging/build_windows.ps1
+
+      - name: Self-test the built executable
+        shell: pwsh
+        run: |
+          & "dist/AutoTextTyper/AutoTextTyper.exe" --self-test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist/*Setup.exe
+            dist/*portable.zip
+          if-no-files-found: error
+
+  linux:
+    # Deliberately the same older-glibc runner as CI (not ubuntu-latest):
+    # a binary linked against an older glibc keeps running on newer
+    # distros, but not the other way around, so this maximizes how many
+    # users' systems the resulting AppImage/tarball actually run on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libegl1 \
+            libgl1 \
+            libfuse2 \
+            file \
+            xvfb
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Build
+        run: packaging/build_linux.sh
+
+      - name: Self-test the built executable
+        run: xvfb-run -a dist/auto-text-typer/auto-text-typer --self-test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: [macos, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist-artifacts/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

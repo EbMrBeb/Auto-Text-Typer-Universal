@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR instead of burning CI minutes
+# on a push that is already obsolete.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    env:
+      # pynput and Qt both need *some* display/platform backend to
+      # initialize even when nothing is ever shown; the offscreen QPA
+      # plugin satisfies Qt everywhere, and the Linux job additionally
+      # runs pytest itself under Xvfb below for pynput's X11 backend,
+      # which does not honor QT_QPA_PLATFORM at all.
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Linux Qt/X11 runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libegl1 \
+            libgl1
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,gui]"
+
+      - name: Run tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest
+
+      - name: Run tests
+        if: runner.os != 'Linux'
+        run: python -m pytest
