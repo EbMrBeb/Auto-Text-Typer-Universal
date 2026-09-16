@@ -117,11 +117,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="print the path to the user profiles config file, then exit",
     )
-    parser.add_argument(
-        "--menubar",
-        action="store_true",
-        help="launch the macOS menu-bar app instead of the CLI (needs the 'menubar' extra)",
-    )
     return parser.parse_args(list(argv))
 
 
@@ -214,14 +209,6 @@ def main(
     sleep: Callable[[float], None] | None = None,
 ) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-
-    if args.menubar:
-        try:
-            from auto_essay_typer.menubar import main as menubar_main
-        except RuntimeError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        return menubar_main()
 
     if args.list_profiles:
         _print_profile_list()
