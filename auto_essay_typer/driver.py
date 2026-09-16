@@ -20,8 +20,9 @@ from contextlib import AbstractContextManager
 from enum import Enum, auto
 from typing import Callable, Iterable, Protocol
 
+from auto_essay_typer import platforms, targets
 from auto_essay_typer.actions import Action, Backspace, Format, FormatOp, KeyPress, Pause
-from auto_essay_typer.keymaps import GOOGLE_DOCS_MAC, Chord
+from auto_essay_typer.keymaps import Chord
 
 # Long pauses are slept in slices no longer than this, so that pause and abort
 # take effect promptly instead of after a five-second paragraph break.
@@ -126,7 +127,7 @@ class PynputKeyboard:
             "shift": Key.shift,
             "ctrl": Key.ctrl,
         }
-        self._chord_final_keys = {"tab": Key.tab, "enter": Key.enter}
+        self._chord_final_keys = {"tab": Key.tab, "enter": Key.enter, "space": Key.space}
 
     def press_char(self, char: str) -> None:
         named = self._named.get(char)
@@ -142,6 +143,11 @@ class PynputKeyboard:
     def press_chord(self, keys: Chord) -> None:
         """Press one keyboard shortcut: hold every modifier, tap the final key.
 
+        An empty chord (``keymaps.NO_OP``) presses nothing at all -- some
+        keymaps deliberately map a FormatOp to it when the target app has no
+        usable shortcut for that op (see ``keymaps.NO_OP``'s docstring), and
+        ``Driver`` already treats that as "handled" rather than unsupported.
+
         Modifiers are held with one nested ``controller.pressed(...)``
         context manager per modifier -- rather than a single call given every
         key at once -- so that if tapping the final key raises, every
@@ -149,6 +155,8 @@ class PynputKeyboard:
         back out through the nested ``with`` blocks. No manual try/finally is
         needed for that: it falls out of plain context-manager nesting.
         """
+        if not keys:
+            return
         *modifiers, final = keys
         self._hold_and_tap(list(modifiers), final)
 
@@ -168,12 +176,21 @@ class Driver:
         keyboard: Keyboard | None = None,
         sleep: Callable[[float], None] = time.sleep,
         countdown_seconds: int = 5,
-        keymap: Mapping[FormatOp, Chord] = GOOGLE_DOCS_MAC,
+        keymap: Mapping[FormatOp, Chord] | None = None,
     ) -> None:
         self._keyboard = keyboard if keyboard is not None else PynputKeyboard()
         self._sleep = sleep
         self._countdown_seconds = countdown_seconds
-        self._keymap = keymap
+        # Resolved fresh here (not a literal default evaluated once at import
+        # time) so it reflects the OS this process is actually running on.
+        # Goes through the `platforms`/`targets` *modules* rather than
+        # importing `current_os`/`keymap_for` as bare names, so a test's
+        # `monkeypatch.setattr(platforms, "current_os", ...)` is seen here too.
+        self._keymap = (
+            keymap
+            if keymap is not None
+            else targets.keymap_for("google-docs", platforms.current_os())
+        )
         self._abort = threading.Event()
         self._resumed = threading.Event()
         self._resumed.set()

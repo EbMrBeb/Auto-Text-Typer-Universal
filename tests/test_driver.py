@@ -4,6 +4,7 @@ from collections.abc import Iterator
 import pytest
 from pynput.keyboard import Key
 
+from auto_essay_typer import platforms, targets
 from auto_essay_typer.actions import Backspace, Format, FormatOp, KeyPress, Pause
 from auto_essay_typer.driver import (
     Driver,
@@ -12,8 +13,9 @@ from auto_essay_typer.driver import (
     RunResult,
     UnsupportedFormatError,
 )
-from auto_essay_typer.keymaps import GOOGLE_DOCS_MAC
+from auto_essay_typer.keymaps import GOOGLE_DOCS_MAC, NO_OP
 from auto_essay_typer.planner import plan
+from auto_essay_typer.platforms import OperatingSystem
 from auto_essay_typer.profiles import Profile
 
 
@@ -113,7 +115,15 @@ class _LoggingKeyboard(RecordingKeyboard):
 
 def test_format_presses_mapped_chord_interleaved_with_characters():
     keyboard = _LoggingKeyboard()
-    d = Driver(keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0)
+    # keymap pinned explicitly: this test is about interleaving order, not
+    # keymap resolution, and the assertions below check against
+    # GOOGLE_DOCS_MAC specifically.
+    d = Driver(
+        keyboard=keyboard,
+        sleep=lambda _: None,
+        countdown_seconds=0,
+        keymap=GOOGLE_DOCS_MAC,
+    )
     actions = [
         KeyPress("h"),
         KeyPress("i"),
@@ -140,10 +150,34 @@ def test_format_presses_mapped_chord_interleaved_with_characters():
     ]
 
 
-def test_default_keymap_is_google_docs_mac():
+def test_default_keymap_is_google_docs_mac(monkeypatch):
+    # Pinned to macOS regardless of host OS, since this test is specifically
+    # about what the default resolves to *on macOS* (as opposed to
+    # test_default_keymap_resolves_per_os_at_construction_time, which checks
+    # the general per-OS resolution behavior).
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.MACOS)
     d, keyboard, _ = driver()
     d.run([Format(FormatOp.TOGGLE_ITALIC)])
     assert keyboard.chords == [GOOGLE_DOCS_MAC[FormatOp.TOGGLE_ITALIC]]
+
+
+def test_default_keymap_resolves_per_os_at_construction_time(monkeypatch):
+    """The default keymap must be resolved fresh when Driver() is constructed,
+    using the OS current at that moment -- not frozen to macOS by a
+    module-level default evaluated once at import time."""
+    monkeypatch.setattr(platforms, "current_os", lambda: OperatingSystem.WINDOWS)
+    d, keyboard, _ = driver()
+
+    # TOGGLE_STRIKETHROUGH is alt+shift+5 on Windows -- a deliberate
+    # non-substitution, not a cmd->ctrl swap of mac's cmd+shift+x (see
+    # targets.py) -- so this can only pass if the Windows keymap was
+    # genuinely resolved, not silently defaulted to GOOGLE_DOCS_MAC.
+    d.run([Format(FormatOp.TOGGLE_STRIKETHROUGH)])
+
+    expected = targets.keymap_for("google-docs", OperatingSystem.WINDOWS)[
+        FormatOp.TOGGLE_STRIKETHROUGH
+    ]
+    assert keyboard.chords == [expected]
 
 
 def test_custom_keymap_is_used_instead_of_the_default():
@@ -177,6 +211,19 @@ def test_missing_format_op_error_names_every_missing_op():
     assert "align_center" in message
 
 
+def test_format_action_with_no_op_chord_completes_without_pressing_keys():
+    # A FormatOp mapped to keymaps.NO_OP is still "handled": _check_keymap_covers
+    # checks key presence (`used_ops - self._keymap.keys()`), not chord
+    # truthiness, so this must run to completion instead of raising
+    # UnsupportedFormatError, and the recorded chord is the empty tuple itself.
+    d, keyboard, _ = driver(keymap={FormatOp.CLEAR_FORMATTING: NO_OP})
+
+    result = d.run([Format(FormatOp.CLEAR_FORMATTING)])
+
+    assert result is RunResult.COMPLETED
+    assert keyboard.chords == [()]
+
+
 class _UnknownAction:
     """Stands in for a future Action variant the driver's match statement doesn't know."""
 
@@ -191,7 +238,15 @@ def test_abort_stops_mid_stream_with_format_actions_present():
     keyboard = RecordingKeyboard()
     # Countdown must be 0, otherwise the abort fires during the countdown and
     # nothing is ever typed (same reasoning as test_abort_stops_mid_stream).
-    d = Driver(keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0)
+    # keymap is pinned explicitly (rather than left at the OS-resolved
+    # default) since GOOGLE_DOCS_MAC is what the final assertion checks
+    # against, and this test isn't about keymap resolution at all.
+    d = Driver(
+        keyboard=keyboard,
+        sleep=lambda _: None,
+        countdown_seconds=0,
+        keymap=GOOGLE_DOCS_MAC,
+    )
     d._sleep = lambda _: d.abort()
     result = d.run([KeyPress("a"), Format(FormatOp.TOGGLE_BOLD), Pause(50.0), KeyPress("b")])
     assert result is RunResult.ABORTED
@@ -281,3 +336,25 @@ def test_pynput_keyboard_releases_modifiers_when_tap_raises():
         ("release", Key.shift),
         ("release", Key.cmd),
     ]
+
+
+def test_pynput_keyboard_taps_space_with_modifier_held():
+    controller = _FakeController()
+    keyboard = PynputKeyboard(controller=controller)
+
+    keyboard.press_chord(("ctrl", "space"))
+
+    assert controller.events == [
+        ("press", Key.ctrl),
+        ("tap", Key.space),
+        ("release", Key.ctrl),
+    ]
+
+
+def test_pynput_keyboard_press_chord_no_op_presses_nothing():
+    controller = _FakeController()
+    keyboard = PynputKeyboard(controller=controller)
+
+    keyboard.press_chord(NO_OP)
+
+    assert controller.events == []

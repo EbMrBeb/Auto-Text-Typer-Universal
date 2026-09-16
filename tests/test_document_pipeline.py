@@ -46,8 +46,13 @@ def _assert_pipeline_reproduces(doc: Document) -> None:
 
         # And a real Driver, typing into a RecordingKeyboard, must reproduce
         # both the text and only ever press chords the keymap actually has.
+        # Pinned to the same GOOGLE_DOCS_MAC used by adapt_document above
+        # (rather than the OS-resolved default) since _VALID_CHORDS below is
+        # GOOGLE_DOCS_MAC's own value set.
         keyboard = RecordingKeyboard()
-        driver = Driver(keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0)
+        driver = Driver(
+            keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0, keymap=GOOGLE_DOCS_MAC
+        )
         result = driver.run(actions)
 
         assert result is RunResult.COMPLETED, f"seed={seed}: driver run did not complete"
@@ -138,7 +143,13 @@ def test_driver_rejects_a_plan_with_set_title_before_typing_anything():
     )
 
     keyboard = RecordingKeyboard()
-    driver = Driver(keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0)
+    # keymap pinned to GOOGLE_DOCS_MAC for consistency with the other
+    # Driver(...) calls in this file -- SET_TITLE is absent from every
+    # google-docs keymap (mac and Windows/Linux alike), so this specific
+    # test isn't actually OS-sensitive, but pinning it removes any doubt.
+    driver = Driver(
+        keyboard=keyboard, sleep=lambda _: None, countdown_seconds=0, keymap=GOOGLE_DOCS_MAC
+    )
 
     with pytest.raises(UnsupportedFormatError, match="set_title"):
         driver.run(actions)
