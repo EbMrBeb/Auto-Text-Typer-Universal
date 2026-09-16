@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . "PySide6-Essentials>=6.8" "pyinstaller>=6.12"
+          python -m pip install -e ".[build,gui]"
 
       - name: Build (try universal2, fall back to arm64)
         id: build
@@ -75,7 +75,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . "PySide6-Essentials>=6.8" "pyinstaller>=6.12"
+          python -m pip install -e ".[build,gui]"
 
       - name: Ensure Inno Setup (iscc) is installed
         shell: pwsh
@@ -138,7 +138,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . "PySide6-Essentials>=6.8" "pyinstaller>=6.12"
+          python -m pip install -e ".[build,gui]"
 
       - name: Build
         run: packaging/build_linux.sh

@@ -9,7 +9,17 @@ It does not write essays. You provide the text; it reproduces it exactly.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev,gui]"
+```
+
+`dev` is the test tooling (pytest, pytest-cov, pytest-qt). `gui` is PySide6,
+for the upcoming Qt GUI and the packaging spike (`packaging/spike_app.py`);
+the current Tkinter GUI (`auto_essay_typer.app`) does not need it. Install the
+two together anyway: pytest-qt refuses to start pytest without a Qt binding,
+so with `.[dev]` alone every test run stops before collecting a single test:
+
+```
+ERROR: pytest-qt requires either PySide6, PyQt5 or PyQt6 installed.
 ```
 
 ### Grant Accessibility permission (required)
@@ -22,6 +32,29 @@ macOS blocks synthetic keystrokes by default. Grant permission to the app that
 Quit and relaunch that app afterwards. macOS does not apply the change to
 already-running processes. Without this, nothing is typed and no error is
 raised — see [Limitations](#limitations).
+
+### Building standalone packages
+
+```bash
+.venv/bin/pip install -e ".[build,gui]"
+```
+
+`build` adds PyInstaller, which the build scripts (`packaging/build_macos.sh`,
+`packaging/build_windows.ps1`, `packaging/build_linux.sh`) run; Pillow, for
+`packaging/make_icons.py`; and PyYAML, used only to validate the GitHub
+Actions workflow files during development. None of them is needed at runtime.
+They can share the `.venv` you made above: the build scripts use that
+`.venv`'s `pyinstaller` when it exists, and whichever is on `PATH` otherwise.
+
+The scripts package whatever entry point `ATT_ENTRY` names. It defaults to
+`packaging/launch_gui.py`, which imports `auto_essay_typer.gui` — a module
+that is not written yet — so a default build can't give you a working app
+for now. Until the Qt GUI lands, build the spike app instead, as the release
+workflow does:
+
+```bash
+ATT_ENTRY=packaging/spike_app.py packaging/build_macos.sh
+```
 
 ## Use
 
@@ -490,7 +523,7 @@ running Python (see [Limitations](#limitations)) — not a bug in the planner.
 - **Menu-bar mode is macOS-only and needs an optional dependency.**
   `menubar.py` imports `rumps` (and, for its file-open dialog, `AppKit`)
   directly, with no cross-platform fallback. It is not installed by
-  `pip install -e ".[dev]"` — you need `pip install -e ".[menubar]"`
+  `pip install -e ".[dev,gui]"` — you need `pip install -e ".[menubar]"`
   separately, and importing `auto_essay_typer.menubar` without it raises a
   `RuntimeError` with install instructions rather than typing nothing
   silently.
