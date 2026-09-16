@@ -18,6 +18,7 @@ errors a real fetch could raise.
 from __future__ import annotations
 
 import re
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
@@ -27,6 +28,7 @@ from urllib.request import Request, urlopen
 from auto_essay_typer.document import Document
 from auto_essay_typer.importers import gdocs_html
 from auto_essay_typer.importers.docx import parse_docx
+from auto_essay_typer.net import create_ssl_context
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -37,6 +39,12 @@ _TIMEOUT_SECONDS = 20.0
 _ACCESS_DENIED_MESSAGE = (
     'Access denied: set sharing to "Anyone with the link can view", or download the '
     "document (File > Download > Microsoft Word (.docx)) and use that file instead."
+)
+
+_CERT_VERIFICATION_MESSAGE = (
+    "the secure connection to Google could not be verified; this usually means a "
+    "network filter or proxy is intercepting HTTPS; try another network, or download "
+    "the document as .docx and use the file instead ({reason})"
 )
 
 
@@ -92,17 +100,20 @@ FetchFn = Callable[[str], FetchResult]
 
 
 def default_fetch(url: str) -> FetchResult:
-    """Fetch ``url`` over the network: a 20s timeout, a browser-like User-Agent.
+    """Fetch ``url`` over the network: a 20s timeout, a browser-like User-Agent,
+    and a TLS certificate verified against the OS trust store (see ``net.py``).
 
     The User-Agent matters because Google serves a different (sign-in-only)
     response to requests that look like a bot to some of these endpoints.
-    Raises the underlying ``urllib.error`` exceptions uncaught -- callers of
-    this module go through ``load_from_google``, which maps them to the
-    project's own error hierarchy; this function is deliberately a thin,
+    Raises the underlying ``urllib.error`` (and ``ssl``) exceptions uncaught --
+    callers of this module go through ``load_from_google``, which maps them to
+    the project's own error hierarchy; this function is deliberately a thin,
     literal "go fetch this URL" with no interpretation of its own.
     """
     request = Request(url, headers={"User-Agent": _USER_AGENT})
-    with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:  # noqa: S310 (stdlib-only by design)
+    with urlopen(
+        request, timeout=_TIMEOUT_SECONDS, context=create_ssl_context()
+    ) as response:  # noqa: S310 (stdlib-only by design)
         data = response.read()
         content_type = response.headers.get("Content-Type", "")
         final_url = response.geturl()
@@ -177,14 +188,28 @@ def _fetch_url_for(ref: GoogleRef, original_url: str) -> str:
 
 
 def _fetch_or_raise(fetch: FetchFn, url: str) -> FetchResult:
-    """Call ``fetch(url)``, translating ``urllib`` failures to this module's errors."""
+    """Call ``fetch(url)``, translating ``urllib``/``ssl`` failures to this module's errors.
+
+    A certificate-verification failure is deliberately distinguished from
+    every other connection problem: it is not a "Google is unreachable" or
+    "flaky network" situation a retry would fix, but almost always a
+    network filter or proxy intercepting HTTPS, so it gets its own
+    message pointing at the actual cause and a way to route around it.
+    ``fetch`` can surface this either as a bare ``ssl.SSLCertVerificationError``
+    or (the shape ``urlopen`` itself produces) a ``URLError`` whose ``reason``
+    is one.
+    """
     try:
         return fetch(url)
     except HTTPError as exc:
         if exc.code == 404:
             raise NotFoundError(f"not found - check the link ({url})") from exc
         raise FetchError(f"Google returned an error fetching the document: HTTP {exc.code} {exc.reason}") from exc
+    except ssl.SSLCertVerificationError as exc:
+        raise FetchError(_CERT_VERIFICATION_MESSAGE.format(reason=exc)) from exc
     except URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise FetchError(_CERT_VERIFICATION_MESSAGE.format(reason=exc.reason)) from exc
         raise FetchError(f"could not reach Google: {exc.reason}") from exc
 
 

@@ -3,7 +3,7 @@ name = "auto-essay-typer"
 version = "0.1.0"
 description = "Types supplied text into any application with human-like rhythm and self-corrected mistakes"
 requires-python = ">=3.12"
-dependencies = ["pynput>=1.8"]
+dependencies = ["pynput>=1.8", "truststore>=0.10", "certifi>=2024.2.2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5"]
@@ -19,6 +19,9 @@ include = ["auto_essay_typer*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "network: opt-in test that makes a real network request (set ATT_NETWORK_TESTS=1 to run)",
+]
 
 [tool.coverage.report]
 fail_under = 80

@@ -3,6 +3,7 @@ classification, and the drive-file-as-docx path. No test here ever touches
 the network -- every fetch is injected.
 """
 
+import ssl
 from urllib.error import URLError
 
 import pytest
@@ -299,6 +300,51 @@ def test_other_http_error_raises_fetch_error():
 
     with pytest.raises(FetchError):
         load_from_google("https://docs.google.com/document/d/abc123/edit", fetch=fetch)
+
+
+def _fake_cert_verification_error() -> ssl.SSLCertVerificationError:
+    """Shaped like what a real failed TLS handshake raises -- args=(errno-like
+    code, bracketed message) -- so ``str()`` reads like the genuine error
+    rather than a constructor artifact of a single-string test double."""
+    return ssl.SSLCertVerificationError(
+        1,
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "unable to get local issuer certificate (_ssl.c:1077)",
+    )
+
+
+def test_certificate_verification_url_error_raises_helpful_fetch_error():
+    """This is the shape ``urlopen`` itself produces: the SSL failure arrives
+    wrapped as a ``URLError`` whose ``reason`` is the cert-verification error."""
+
+    def fetch(url: str) -> FetchResult:
+        raise URLError(_fake_cert_verification_error())
+
+    with pytest.raises(FetchError) as excinfo:
+        load_from_google("https://docs.google.com/document/d/abc123/edit", fetch=fetch)
+
+    message = str(excinfo.value)
+    assert "network" in message.lower() or "proxy" in message.lower()
+    assert ".docx" in message
+    assert "disable" not in message.lower()
+    assert "CERTIFICATE_VERIFY_FAILED" in message
+
+
+def test_bare_certificate_verification_error_raises_helpful_fetch_error():
+    """A fetcher can also raise the SSL error directly, unwrapped -- a
+    plausible shape for a custom ``fetch`` callable even though ``urlopen``
+    itself always wraps it in a ``URLError`` (see the test above)."""
+
+    def fetch(url: str) -> FetchResult:
+        raise _fake_cert_verification_error()
+
+    with pytest.raises(FetchError) as excinfo:
+        load_from_google("https://docs.google.com/document/d/abc123/edit", fetch=fetch)
+
+    message = str(excinfo.value)
+    assert "network" in message.lower() or "proxy" in message.lower()
+    assert ".docx" in message
+    assert "disable" not in message.lower()
 
 
 # --- GoogleRef / FetchResult are plain frozen data -----------------------------
