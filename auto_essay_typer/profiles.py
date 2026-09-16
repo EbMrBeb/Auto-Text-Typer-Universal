@@ -229,3 +229,329 @@ def preset(name: str) -> Profile:
     if key not in PRESETS:
         raise KeyError(f"unknown preset {name!r}; choose one of {sorted(PRESETS)}")
     return PRESETS[key]
+
+
+@dataclass(frozen=True)
+class FieldInfo:
+    """Display metadata for one ``Profile`` field, for building a settings UI.
+
+    ``minimum``/``maximum``/``step`` describe the slider domain for the
+    field. For a tuple range field (e.g. ``burst_range``) they bound BOTH
+    ends of the tuple, not two separate ranges. For the one bool field
+    (``session_breaks``) they are ``0.0``/``1.0``/``1.0``, as if the field
+    were an int.
+    """
+
+    label: str
+    help: str
+    group: str
+    unit: str
+    minimum: float
+    maximum: float
+    step: float
+    advanced: bool
+
+
+FIELD_INFO: dict[str, FieldInfo] = {
+    # --- speed -----------------------------------------------------------
+    "wpm": FieldInfo(
+        label="Typing speed",
+        help="How many words per minute the typing looks like, on average.",
+        group="Speed",
+        unit="wpm",
+        minimum=10.0,
+        maximum=220.0,
+        step=5.0,
+        advanced=False,
+    ),
+    "lognormal_sigma": FieldInfo(
+        label="Speed variability",
+        help="How much typing speed wanders from one keystroke to the next.",
+        group="Speed",
+        unit="",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    "burst_sigma": FieldInfo(
+        label="Burst jitter",
+        help="How much short bursts of fast or slow typing wobble around normal speed.",
+        group="Speed",
+        unit="",
+        minimum=0.0,
+        maximum=0.5,
+        step=0.01,
+        advanced=True,
+    ),
+    "burst_reversion": FieldInfo(
+        label="Burst recovery rate",
+        help="How quickly a burst of unusually fast or slow typing settles back to normal.",
+        group="Speed",
+        unit="",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    "burst_range": FieldInfo(
+        label="Burst speed range",
+        help="The fastest and slowest a burst of typing can push the speed, as a multiplier of normal.",
+        group="Speed",
+        unit="×",
+        minimum=0.1,
+        maximum=3.0,
+        step=0.05,
+        advanced=True,
+    ),
+    "fatigue_max": FieldInfo(
+        label="Maximum fatigue slowdown",
+        help="The most that typing is allowed to slow down as a long session wears on.",
+        group="Speed",
+        unit="%",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    "fatigue_tau_ms": FieldInfo(
+        label="Fatigue buildup time",
+        help="How long it takes for tiredness to build up and slow typing down.",
+        group="Speed",
+        unit="ms",
+        minimum=60000.0,
+        maximum=7200000.0,
+        step=60000.0,
+        advanced=True,
+    ),
+    # --- thinking pauses ---------------------------------------------------
+    "sentence_pause_ms": FieldInfo(
+        label="Pause after a sentence",
+        help="How long to pause after finishing a sentence, as if thinking of the next one.",
+        group="Pauses",
+        unit="ms",
+        minimum=0.0,
+        maximum=5000.0,
+        step=50.0,
+        advanced=True,
+    ),
+    "clause_pause_ms": FieldInfo(
+        label="Pause after a clause",
+        help="How long to pause at a comma or similar break inside a sentence.",
+        group="Pauses",
+        unit="ms",
+        minimum=0.0,
+        maximum=3000.0,
+        step=10.0,
+        advanced=True,
+    ),
+    "paragraph_pause_ms": FieldInfo(
+        label="Pause after a paragraph",
+        help="How long to pause after finishing a paragraph before starting the next.",
+        group="Pauses",
+        unit="ms",
+        minimum=0.0,
+        maximum=15000.0,
+        step=100.0,
+        advanced=True,
+    ),
+    "hesitation_probability": FieldInfo(
+        label="Hesitation chance",
+        help="The chance of randomly hesitating for a moment before a word.",
+        group="Pauses",
+        unit="%",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    "hesitation_ms": FieldInfo(
+        label="Hesitation length",
+        help="How long a random hesitation before a word lasts.",
+        group="Pauses",
+        unit="ms",
+        minimum=0.0,
+        maximum=5000.0,
+        step=50.0,
+        advanced=True,
+    ),
+    "long_word_threshold": FieldInfo(
+        label="Long word threshold",
+        help="How many letters a word needs before it counts as long enough to slow down for.",
+        group="Pauses",
+        unit="characters",
+        minimum=1.0,
+        maximum=30.0,
+        step=1.0,
+        advanced=True,
+    ),
+    # --- mistakes ----------------------------------------------------------
+    "typo_rate_per_100": FieldInfo(
+        label="Mistake rate",
+        help="How many typing mistakes happen, on average, per 100 characters typed.",
+        group="Mistakes",
+        unit="per 100 characters",
+        minimum=0.0,
+        maximum=50.0,
+        step=0.1,
+        advanced=False,
+    ),
+    "oh_moment_ms": FieldInfo(
+        label="Reaction time to a mistake",
+        help="How long it takes to notice and react to a mistake before fixing it.",
+        group="Mistakes",
+        unit="ms",
+        minimum=0.0,
+        maximum=3000.0,
+        step=10.0,
+        advanced=True,
+    ),
+    "backspace_ms": FieldInfo(
+        label="Backspace speed",
+        help="How long each backspace press takes while fixing a mistake.",
+        group="Mistakes",
+        unit="ms",
+        minimum=0.0,
+        maximum=1000.0,
+        step=5.0,
+        advanced=True,
+    ),
+    "retype_care_factor": FieldInfo(
+        label="Retype caution",
+        help="How much slower and more careful typing gets right after fixing a mistake.",
+        group="Mistakes",
+        unit="×",
+        minimum=0.5,
+        maximum=3.0,
+        step=0.05,
+        advanced=True,
+    ),
+    # --- revision ------------------------------------------------------------
+    "revision_rate_per_word": FieldInfo(
+        label="Revision frequency",
+        help="How often, on average, a word gets second-guessed and rewritten after it was already typed.",
+        group="Revisions",
+        unit="per word",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.001,
+        advanced=True,
+    ),
+    "revision_span_words": FieldInfo(
+        label="Revision span",
+        help="How many words back a revision reaches when rewriting something already typed.",
+        group="Revisions",
+        unit="words",
+        minimum=1.0,
+        maximum=20.0,
+        step=1.0,
+        advanced=True,
+    ),
+    # --- session breaks --------------------------------------------------------
+    "session_breaks": FieldInfo(
+        label="Take breaks",
+        help="Whether typing pauses now and then to take a short break, like a real person would.",
+        group="Breaks",
+        unit="",
+        minimum=0.0,
+        maximum=1.0,
+        step=1.0,
+        advanced=False,
+    ),
+    "break_interval_ms": FieldInfo(
+        label="Time between breaks",
+        help="How long a stretch of typing happens before it's time for a break.",
+        group="Breaks",
+        unit="ms",
+        minimum=0.0,
+        maximum=3600000.0,
+        step=10000.0,
+        advanced=True,
+    ),
+    "short_break_ms": FieldInfo(
+        label="Short break length",
+        help="How long a typical break away from typing lasts.",
+        group="Breaks",
+        unit="ms",
+        minimum=0.0,
+        maximum=600000.0,
+        step=5000.0,
+        advanced=True,
+    ),
+    "long_break_probability": FieldInfo(
+        label="Long break chance",
+        help="The chance that a break turns into a longer one instead of a short one.",
+        group="Breaks",
+        unit="%",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    "long_break_ms": FieldInfo(
+        label="Long break length",
+        help="How long a longer, less frequent break lasts.",
+        group="Breaks",
+        unit="ms",
+        minimum=0.0,
+        maximum=1800000.0,
+        step=10000.0,
+        advanced=True,
+    ),
+    "post_break_burst": FieldInfo(
+        label="Re-entry slowdown after a break",
+        help="How much slower typing starts out right after coming back from a break.",
+        group="Breaks",
+        unit="×",
+        minimum=0.1,
+        maximum=3.0,
+        step=0.05,
+        advanced=True,
+    ),
+    "break_fatigue_recovery": FieldInfo(
+        label="Fatigue recovered per break",
+        help="How much of the built-up tiredness a break clears away.",
+        group="Breaks",
+        unit="%",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        advanced=True,
+    ),
+    # --- formatting --------------------------------------------------------
+    "format_shortcut_ms": FieldInfo(
+        label="Formatting shortcut speed",
+        help="How long it takes to press a formatting shortcut, like bold or a heading, compared to a normal key.",
+        group="Formatting",
+        unit="ms",
+        minimum=0.0,
+        maximum=3000.0,
+        step=10.0,
+        advanced=True,
+    ),
+}
+
+
+_GROUP_ORDER: tuple[str, ...] = (
+    "Speed",
+    "Pauses",
+    "Mistakes",
+    "Revisions",
+    "Breaks",
+    "Formatting",
+)
+
+
+def group_fields() -> list[tuple[str, list[str]]]:
+    """Group field names for display, in a fixed group order.
+
+    Fields within each group keep ``Profile``'s own declared order (derived
+    from dataclass metadata, like ``field_names()`` does, so a newly added
+    field lands in its group automatically once it has a ``FIELD_INFO``
+    entry) rather than the alphabetical order ``field_names()`` returns.
+    """
+    declared_order = [f.name for f in fields(Profile)]
+    return [
+        (group, [name for name in declared_order if FIELD_INFO[name].group == group])
+        for group in _GROUP_ORDER
+    ]
