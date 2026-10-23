@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from auto_essay_typer import __version__
+from auto_essay_typer.driver import preload_keyboard_backend
 
 APP_NAME = "Auto Text Typer"
 ORG_NAME = "Auto Text Typer"
@@ -109,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     if "--version" in argv:
         print(f"{APP_NAME} {__version__}")
         return 0
+
+    preload_keyboard_backend()  # main thread, before any window: macOS kills the app otherwise
 
     if "--self-test" in argv:
         return _self_test()

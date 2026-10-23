@@ -9,6 +9,10 @@ slot owned by a GUI-thread object (the pattern the module spec calls out
 explicitly) -- so nothing here ever touches a widget, and no widget code
 ever touches the background thread or the ``Driver`` directly.
 
+Only the *running* happens there: the ``Driver`` is built by :meth:`start` on
+the GUI thread, because building the real keyboard backend off the main thread
+kills the whole process on macOS (see ``driver.preload_keyboard_backend``).
+
 ``pause``/``resume``/``stop`` are called from the GUI thread and only ever
 reach the running ``Driver`` through its own thread-safe ``pause()``/
 ``resume()``/``abort()`` methods (each just sets or clears a
@@ -106,10 +110,17 @@ class RunController(QObject):
         self._busy = True
         self._driver = None
         self._stop_event = threading.Event()
+        try:
+            # Built here on the GUI thread, never on the worker: constructing the real
+            # keyboard backend off the main thread kills the whole process on macOS.
+            driver = self._driver_factory()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user via `finished`
+            self._finish_worker("failed", f"Keyboard setup failed: {exc}")
+            return
         self._set_state("planning")
         self._thread = threading.Thread(
             target=self._run_worker,
-            args=(text, profile, seed, self._stop_event),
+            args=(text, profile, seed, self._stop_event, driver),
             daemon=True,
         )
         self._thread.start()
@@ -181,7 +192,12 @@ class RunController(QObject):
     # simple assign-then-only-read-elsewhere pattern used here.
 
     def _run_worker(
-        self, text: str, profile: Profile, seed: int | None, stop_event: threading.Event
+        self,
+        text: str,
+        profile: Profile,
+        seed: int | None,
+        stop_event: threading.Event,
+        driver: Driver,
     ) -> None:
         try:
             actions = plan(text, profile, seed)
@@ -192,7 +208,6 @@ class RunController(QObject):
         total_ms = total_duration_ms(actions)
         cumulative = cumulative_pause_ms_by_keypress(actions)
 
-        driver = self._driver_factory()
         self._driver = driver
         if stop_event.is_set():
             # Stop was requested while still planning -- Driver.run() itself

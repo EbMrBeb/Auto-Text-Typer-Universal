@@ -11,8 +11,14 @@ supplied to :class:`Driver`. ``Driver.run`` validates every ``Format`` op the
 action stream uses against that keymap up front, before the countdown or any
 keystroke, so an unreachable formatting command is reported once and clearly
 rather than discovered mid-run by silently skipping it.
+
+``PynputKeyboard`` types through one process-wide pynput ``Controller`` that
+must be *built* on the main thread (see :func:`preload_keyboard_backend` for
+the macOS reason) but can then be *used* from any thread, such as the worker
+that runs a typing session.
 """
 
+import logging
 import threading
 import time
 from collections.abc import Mapping
@@ -93,6 +99,99 @@ class _PynputController(Protocol):
     def pressed(self, *keys: object) -> AbstractContextManager[None]: ...
 
 
+_log = logging.getLogger(__name__)
+
+#: The process-wide pynput ``Controller`` every ``PynputKeyboard`` shares unless
+#: it is handed one explicitly. Written only by :func:`_shared_keyboard_controller`.
+_shared_controller: _PynputController | None = None
+_shared_controller_lock = threading.Lock()
+
+_BUILD_OFF_MAIN_THREAD_MESSAGE = (
+    "The keyboard backend has not been built, and macOS only allows it to be "
+    "built on the main thread: pynput's Controller reads the keyboard layout "
+    "through TSMGetInputSourceProperty, and once a GUI is running macOS kills "
+    "the whole process if that is called from any other thread. Call "
+    "auto_essay_typer.driver.preload_keyboard_backend() on the main thread "
+    "during startup, before creating a window or starting worker threads."
+)
+
+
+def _build_controller() -> _PynputController:
+    """Build a brand-new pynput ``Controller``.
+
+    Raises ``RuntimeError`` instead of building one when that would be fatal:
+    on macOS, off the main thread. A Python exception the user can see beats
+    the process being killed by the OS with no message at all.
+    """
+    if platforms.current_os() is platforms.OperatingSystem.MACOS and (
+        threading.current_thread() is not threading.main_thread()
+    ):
+        raise RuntimeError(_BUILD_OFF_MAIN_THREAD_MESSAGE)
+
+    from pynput.keyboard import Controller
+
+    return Controller()
+
+
+def _shared_keyboard_controller() -> _PynputController:
+    """The shared ``Controller``, built first if nothing has built it yet.
+
+    Raises whatever :func:`_build_controller` raises: ``RuntimeError`` where
+    building is forbidden, or pynput's own error where it is unusable.
+    """
+    global _shared_controller
+    with _shared_controller_lock:
+        if _shared_controller is None:
+            _shared_controller = _build_controller()
+        return _shared_controller
+
+
+def preload_keyboard_backend() -> _PynputController | None:
+    """Build the process-wide keyboard backend now, and return it.
+
+    **Call this once, on the main thread, during application startup, before
+    any window or worker thread exists.**
+
+    Why it exists: on macOS, ``pynput.keyboard.Controller.__init__`` reads the
+    current keyboard layout through ``TSMGetInputSourceProperty`` (via ctypes).
+    Once a GUI event loop is running -- AppKit/HIToolbox is active, e.g. a
+    visible Qt window -- that API asserts it is on the main dispatch queue, and
+    when it is called from any other thread the OS does not raise anything
+    Python could catch: it kills the whole process with ``SIGTRAP`` (exit
+    status 133). Only *constructing* a ``Controller`` is main-thread-only.
+    Typing with one that already exists (``type``, ``tap``, ``pressed``) just
+    posts CoreGraphics events and is fine from any thread, which is why the
+    worker thread that runs a typing session can use the controller built here.
+
+    Idempotent: the first successful call builds the Controller and every later
+    call returns that same object. Never raises: if pynput is missing or
+    unusable (no pyobjc on macOS, no display on Linux, or this was called off
+    the main thread on macOS) the failure is logged as a warning and ``None``
+    is returned, so a broken backend cannot stop the application from starting.
+    The failure is not remembered; a later ``PynputKeyboard()`` tries again and
+    raises the real error where it can be shown to the user. Building the
+    Controller does not need Accessibility permission -- without it the OS
+    silently drops the keystrokes instead, which is what
+    :func:`~auto_essay_typer.platforms.check_input_permission` reports.
+
+    Two limits to know about:
+
+    * pynput pins the character-to-keycode map to the keyboard layout current
+      when the Controller is built, so a layout switched after startup is not
+      picked up until the next launch.
+    * It does nothing for pynput's own ``Listener`` / ``GlobalHotKeys``: in
+      pynput 1.8.2 ``Listener._run()`` calls the same Text Services function
+      (``keycode_context()``) on the listener's *own* thread, so starting one
+      under a running GUI kills the process on macOS even when this was called
+      first. A listener needs its own fix.
+    """
+    try:
+        return _shared_keyboard_controller()
+    except Exception as exc:  # noqa: BLE001 - app startup must survive a broken backend
+        _log.warning("Keyboard backend unavailable (%s): %s", type(exc).__name__, exc)
+        return None
+
+
 class PynputKeyboard:
     """Real OS-level keystroke injection.
 
@@ -105,19 +204,20 @@ class PynputKeyboard:
     does structurally -- so tests can exercise the chord-holding logic in
     :meth:`press_chord` without pynput touching the real OS (and, on macOS,
     without needing Accessibility permission just to run the test suite).
-    Either way ``pynput`` is imported lazily right here rather than at module
-    scope, so importing ``driver.py`` never requires pynput to be installed;
-    when ``controller`` is omitted, a real ``Controller`` is constructed in
-    that same lazy import.
+    When ``controller`` is omitted, the process-wide Controller shared through
+    :func:`preload_keyboard_backend` is used, and built first only if nothing
+    has built it yet. Building is refused with a ``RuntimeError`` when the OS
+    would kill the process for it (macOS, off the main thread). Either way
+    ``pynput`` is imported lazily rather than at module scope, so importing
+    ``driver.py`` never requires pynput to be installed.
     """
 
     def __init__(self, controller: _PynputController | None = None) -> None:
+        if controller is None:
+            controller = _shared_keyboard_controller()
+
         from pynput.keyboard import Key
 
-        if controller is None:
-            from pynput.keyboard import Controller
-
-            controller = Controller()
         self._controller = controller
         self._named = {"\n": Key.enter, "\t": Key.tab}
         self._backspace = Key.backspace
