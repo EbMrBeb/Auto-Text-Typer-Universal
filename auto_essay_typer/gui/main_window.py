@@ -9,11 +9,12 @@ landing ``targets.py``/``app_settings.py`` in the main checkout.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from auto_essay_typer import __version__, platforms
 from auto_essay_typer.driver import Driver
 from auto_essay_typer.gui import icons
+from auto_essay_typer.gui.a11y import RunAnnouncer
 from auto_essay_typer.gui.assets import asset_path
 from auto_essay_typer.gui.mini_window import VISIBLE_STATES, MiniProgressWindow
 from auto_essay_typer.gui.pages.help_page import HelpPage
@@ -43,6 +45,7 @@ MIN_WIDTH = 820
 MIN_HEIGHT = 600
 _SIDEBAR_WIDTH = 220
 _NAV_ICON_SIZE = 18
+_CHIP_ICON_SIZE = 14
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class MainWindow(QMainWindow):
         self.run_controller = RunController(driver_factory=driver_factory)
         self.mini_window = MiniProgressWindow(self.run_controller)
         self.run_controller.stateChanged.connect(self._on_run_state_changed)
+        # Speaks the run's milestones to a screen reader (nothing if none is running).
+        self._announcer = RunAnnouncer(self.run_controller, self)
 
         self._pages: list[NavPage] = []
         self._nav_buttons: dict[str, QPushButton] = {}
@@ -144,14 +149,17 @@ class MainWindow(QMainWindow):
         icon_label = QLabel()
         app_icon = QPixmap(str(asset_path("icon.png")))
         if not app_icon.isNull():
-            icon_label.setPixmap(
-                app_icon.scaled(
-                    28,
-                    28,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            # Scaled to the screen's pixel ratio, not to 28 physical pixels, which
+            # would be blurry on a Retina/HiDPI display.
+            ratio = max(1, math.ceil(self.devicePixelRatioF()))
+            logo = app_icon.scaled(
+                28 * ratio,
+                28 * ratio,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
+            logo.setDevicePixelRatio(ratio)
+            icon_label.setPixmap(logo)
         header.addWidget(icon_label)
         name_label = QLabel("Auto Text Typer")
         name_label.setObjectName("SidebarTitle")
@@ -180,7 +188,18 @@ class MainWindow(QMainWindow):
         button.setCheckable(True)
         button.setAutoExclusive(True)
         button.setIconSize(QSize(_NAV_ICON_SIZE, _NAV_ICON_SIZE))
+        button.setAccessibleName(nav_page.title)
         button.clicked.connect(lambda _checked=False, pid=nav_page.page_id: self._select_page(pid))
+        # Ctrl+1, Ctrl+2, ... (Cmd on macOS) jump straight to a page, in sidebar order.
+        position = len(self._nav_buttons) + 1
+        if position <= 9:
+            sequence = QKeySequence(f"Ctrl+{position}")
+            native = sequence.toString(QKeySequence.SequenceFormat.NativeText)
+            button.setToolTip(f"{nav_page.title} ({native})")
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(lambda pid=nav_page.page_id: self._select_page(pid))
+        else:
+            button.setToolTip(nav_page.title)
         self._nav_layout.insertWidget(self._nav_layout.count() - 1, button)
         self._nav_buttons[nav_page.page_id] = button
 
@@ -215,9 +234,18 @@ class MainWindow(QMainWindow):
         self.permission_chip.setObjectName("PermissionChip")
         self.permission_chip.setFlat(True)
         self.permission_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.permission_chip.setIconSize(QSize(_CHIP_ICON_SIZE, _CHIP_ICON_SIZE))
+        self.permission_chip.setAccessibleName("Typing permission")
         self.permission_chip.clicked.connect(self._on_permission_chip_clicked)
-        status_bar.addPermanentWidget(self.permission_chip)
+        # A QStatusBar sets permanent widgets flush against its edges, so the chip
+        # lives in a small padded holder to get the margin it needs.
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 4, 16, 4)
+        holder_layout.addWidget(self.permission_chip)
+        status_bar.addPermanentWidget(holder)
         self.refresh_permission_status()
+        self._theme_manager.themeChanged.connect(self._refresh_chip_icon)
 
     def refresh_permission_status(self) -> None:
         """Re-check and re-render the footer permission chip."""
@@ -226,11 +254,24 @@ class MainWindow(QMainWindow):
         if status.granted:
             self.permission_chip.setText("Ready to type")
             self.permission_chip.setProperty("state", "ready")
+            self.permission_chip.setToolTip("Typing permission is granted. Click to review.")
         else:
             self.permission_chip.setText("Permission needed - Fix")
             self.permission_chip.setProperty("state", "warning")
+            self.permission_chip.setToolTip("Auto Text Typer can't type yet. Click to fix it.")
+        # A screen reader gets the state as the control's value, not just a label.
+        self.permission_chip.setAccessibleDescription(self.permission_chip.text())
+        self._refresh_chip_icon()
         self.permission_chip.style().unpolish(self.permission_chip)
         self.permission_chip.style().polish(self.permission_chip)
+
+    def _refresh_chip_icon(self) -> None:
+        """Tint the chip's check/alert icon to match its text in the current theme."""
+        tokens = self._theme_manager.tokens
+        if self.permission_chip.property("state") == "warning":
+            self.permission_chip.setIcon(icons.icon("alert-triangle", tokens.attention_text, _CHIP_ICON_SIZE))
+        else:
+            self.permission_chip.setIcon(icons.icon("check-circle", tokens.success_text, _CHIP_ICON_SIZE))
 
     def _on_permission_chip_clicked(self) -> None:
         status = self._last_permission_status or self._permission_checker()

@@ -19,6 +19,15 @@ from auto_essay_typer.gui.theme import Tokens
 from auto_essay_typer.platforms import OperatingSystem, PermissionStatus
 
 
+def _prettify(text: str) -> str:
+    """Typographic dashes for text written in ASCII.
+
+    ``platforms.py`` words its permission steps for a terminal as well as for
+    this dialog, so a spaced ``--`` stays there and becomes a real em dash here.
+    """
+    return text.replace(" -- ", " — ")
+
+
 class PermissionDialog(QDialog):
     """Explains why typing can't start yet, and how to fix it.
 
@@ -55,12 +64,11 @@ class PermissionDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 20)
 
         title = QLabel("Auto Text Typer needs permission to type")
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        title.setObjectName("DialogTitle")
         title.setWordWrap(True)
         layout.addWidget(title)
 
-        self._summary_label = QLabel(status.summary)
-        self._summary_label.setObjectName("MutedLabel")
+        self._summary_label = QLabel(_prettify(status.summary))
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
@@ -70,18 +78,24 @@ class PermissionDialog(QDialog):
         self._steps_label.setVisible(bool(status.fix_steps))
         layout.addWidget(self._steps_label)
 
+        # Hidden until a "Check again" comes back still not granted: an empty,
+        # always-visible label would leave a blank row of spacing in the dialog.
         self._retry_label = QLabel("")
+        self._retry_label.setObjectName("InlineMessage")
+        self._retry_label.setProperty("tone", "danger")
         self._retry_label.setWordWrap(True)
-        self._retry_label.setStyleSheet(f"color: {tokens.danger}; font-weight: 600;")
+        self._retry_label.setVisible(False)
         layout.addWidget(self._retry_label)
 
-        layout.addStretch(1)
+        layout.addSpacing(8)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(8)
 
         self.open_settings_button = QPushButton("Open Settings")
         self.open_settings_button.setObjectName("SecondaryButton")
+        self.open_settings_button.setAccessibleName("Open system settings")
+        self.open_settings_button.setToolTip("Open the system settings page where this permission is granted.")
         self.open_settings_button.setVisible(status.can_open_settings)
         self.open_settings_button.clicked.connect(self._on_open_settings)
         button_row.addWidget(self.open_settings_button)
@@ -89,11 +103,14 @@ class PermissionDialog(QDialog):
 
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setObjectName("SecondaryButton")
+        self.cancel_button.setAccessibleName("Cancel")
         self.cancel_button.clicked.connect(self.reject)
         button_row.addWidget(self.cancel_button)
 
         self.check_again_button = QPushButton("Check again")
         self.check_again_button.setObjectName("PrimaryButton")
+        self.check_again_button.setAccessibleName("Check again")
+        self.check_again_button.setToolTip("Check whether the permission has been granted yet.")
         self.check_again_button.setDefault(True)
         self.check_again_button.clicked.connect(self._on_check_again)
         button_row.addWidget(self.check_again_button)
@@ -107,7 +124,7 @@ class PermissionDialog(QDialog):
     def _format_steps(steps: tuple[str, ...]) -> str:
         if not steps:
             return ""
-        items = "".join(f"<li>{html.escape(step)}</li>" for step in steps)
+        items = "".join(f"<li style='margin-bottom:4px;'>{html.escape(_prettify(step))}</li>" for step in steps)
         return f"<ol style='margin:0; padding-left:18px;'>{items}</ol>"
 
     def granted(self) -> bool:
@@ -123,3 +140,4 @@ class PermissionDialog(QDialog):
             self.accept()
             return
         self._retry_label.setText("Still not granted. Complete the steps above, then try again.")
+        self._retry_label.setVisible(True)

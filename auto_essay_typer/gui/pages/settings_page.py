@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from auto_essay_typer.gui.controls import ToggleSwitch, switch_row
 from auto_essay_typer.gui.theme import ThemeManager, ThemeMode
 
 _THEME_LABELS: tuple[tuple[ThemeMode, str], ...] = (
@@ -52,8 +53,14 @@ class SettingsPage(QWidget):
         card_layout.setSpacing(14)
 
         theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Theme"))
+        theme_row.setSpacing(12)
+        theme_label = QLabel("Theme")
+        theme_label.setFixedWidth(72)  # the same label column as the Type page's rows
+        theme_row.addWidget(theme_label)
         self.theme_combo = QComboBox()
+        self.theme_combo.setAccessibleName("Theme")
+        self.theme_combo.setToolTip("Match the system, or always use the light or dark theme.")
+        theme_label.setBuddy(self.theme_combo)
         for mode, label in _THEME_LABELS:
             self.theme_combo.addItem(label, mode)
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(theme_manager.mode))
@@ -61,11 +68,15 @@ class SettingsPage(QWidget):
         theme_row.addWidget(self.theme_combo, 1)
         card_layout.addLayout(theme_row)
 
-        self.mini_window_checkbox = QCheckBox("Show mini progress window while typing")
+        self.mini_window_checkbox = ToggleSwitch("Show mini progress window while typing")
         self.mini_window_checkbox.setObjectName("ToggleSwitch")
+        self.mini_window_checkbox.setAccessibleName("Show mini progress window while typing")
+        self.mini_window_checkbox.setToolTip(
+            "Keep a small always-on-top progress window in the corner while text is typed."
+        )
         self.mini_window_checkbox.setChecked(get_show_mini_window())
         self.mini_window_checkbox.toggled.connect(self._set_show_mini_window)
-        card_layout.addWidget(self.mini_window_checkbox)
+        card_layout.addLayout(switch_row(self.mini_window_checkbox))
 
         root.addWidget(card)
 
