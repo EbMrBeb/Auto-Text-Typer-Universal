@@ -63,7 +63,17 @@ def _has_droppable_file(event) -> bool:
 
 
 class _DropTextEdit(QPlainTextEdit):
-    """QPlainTextEdit that accepts .txt/.md drag-and-drop and normalizes pasted text."""
+    """QPlainTextEdit that accepts .txt/.md drag-and-drop and normalizes pasted text.
+
+    Anything that carries URLs never reaches the document. Qt reports a URL
+    list as *text* (``QMimeData.hasText()`` is true for it, and ``text()`` is
+    the ``file:///...`` line), so QPlainTextEdit's own drop and paste handling
+    would insert that line -- never what the user meant. A dropped .txt/.md
+    file has its contents loaded through ``fileDropped``; every other dropped
+    file or link is refused, with the drag cursor saying so. Plain text, dragged
+    or pasted, still goes in (normalized), and so does a pasted web link that
+    comes with its own text (browsers put one on the clipboard).
+    """
 
     fileDropped = Signal(str)
 
@@ -74,12 +84,16 @@ class _DropTextEdit(QPlainTextEdit):
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
         if _has_droppable_file(event):
             event.acceptProposedAction()
+        elif event.mimeData().hasUrls():
+            event.ignore()
         else:
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
         if _has_droppable_file(event):
             event.acceptProposedAction()
+        elif event.mimeData().hasUrls():
+            event.ignore()
         else:
             super().dragMoveEvent(event)
 
@@ -99,9 +113,35 @@ class _DropTextEdit(QPlainTextEdit):
                 self.fileDropped.emit(content)
                 event.acceptProposedAction()
                 return
+            # URLs, but nothing loadable: refuse the drop outright. Falling
+            # through to QPlainTextEdit.dropEvent would insert the URL text.
+            event.ignore()
+            return
         super().dropEvent(event)
 
+    @staticmethod
+    def _is_insertable(source) -> bool:
+        """Whether ``source`` holds text worth inserting, as opposed to files or links.
+
+        A URL list with no text of its own is just a reference to something,
+        and local files are never pasted as their paths; a web link that
+        arrives with real ``text/plain`` alongside it (what a browser puts on
+        the clipboard) is text the user meant to paste.
+        """
+        if source.hasUrls():
+            if any(url.isLocalFile() for url in source.urls()):
+                return False
+            return source.hasFormat("text/plain")
+        return source.hasText()
+
+    def canInsertFromMimeData(self, source) -> bool:  # noqa: N802 - Qt override
+        if source.hasUrls():
+            return self._is_insertable(source)
+        return super().canInsertFromMimeData(source)
+
     def insertFromMimeData(self, source) -> None:  # noqa: N802 - Qt override
+        if source.hasUrls() and not self._is_insertable(source):
+            return
         if source.hasText():
             self.insertPlainText(platforms.normalize_input_text(source.text()))
         else:

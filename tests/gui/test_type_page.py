@@ -392,3 +392,226 @@ def test_pasting_text_normalizes_line_endings(qtbot, qapp, recording_driver_fact
     mime.setText("pasted\r\ntext\r\n")
     page.text_edit.insertFromMimeData(mime)
     assert page.text_edit.toPlainText() == "pasted\ntext\n"
+
+
+# --- drops and pastes: only text and .txt/.md files ever reach the document --------------
+#
+# Qt reports a list of URLs as *text* (QMimeData.hasText() is true for it and text() is
+# the "file:///..." line), so QPlainTextEdit's own drop and paste handling would insert
+# the URL. These tests pin the box to: load a dropped .txt/.md, insert dropped or pasted
+# text, and refuse every other file and link without touching the document.
+
+
+def _drop(page, mime, *, position=(10, 10)):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtCore import Qt as QtCoreQt
+    from PySide6.QtGui import QDropEvent
+
+    event = QDropEvent(
+        QPointF(*position),
+        QtCoreQt.DropAction.CopyAction,
+        mime,
+        QtCoreQt.MouseButton.LeftButton,
+        QtCoreQt.KeyboardModifier.NoModifier,
+    )
+    page.text_edit.dropEvent(event)
+    return event
+
+
+def _file_mime(path):
+    from PySide6.QtCore import QMimeData, QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    return mime
+
+
+def test_dropping_plain_text_inserts_that_text(qtbot, qapp, recording_driver_factory):
+    from PySide6.QtCore import QMimeData
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setText("dropped words")
+    _drop(page, mime)
+    assert page.text_edit.toPlainText() == "dropped words"
+
+
+def test_dropping_plain_text_normalizes_line_endings(qtbot, qapp, recording_driver_factory):
+    from PySide6.QtCore import QMimeData
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setText("one\r\ntwo")
+    _drop(page, mime)
+    assert page.text_edit.toPlainText() == "one\ntwo"
+
+
+def test_dropping_a_txt_file_replaces_the_text_with_its_contents(
+    qtbot, qapp, recording_driver_factory, tmp_path
+):
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("what was there before")
+    dropped = tmp_path / "essay.txt"
+    dropped.write_text("From the file.\nSecond line.", encoding="utf-8")
+
+    with qtbot.waitSignal(page.text_edit.fileDropped, timeout=1000) as blocker:
+        event = _drop(page, _file_mime(dropped))
+
+    assert blocker.args == ["From the file.\nSecond line."]
+    assert page.text_edit.toPlainText() == "From the file.\nSecond line."
+    assert event.isAccepted()
+    assert "file://" not in page.text_edit.toPlainText()
+
+
+def test_dropping_a_markdown_file_loads_its_contents(qtbot, qapp, recording_driver_factory, tmp_path):
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    dropped = tmp_path / "notes.MD"  # the suffix check is case-insensitive
+    dropped.write_text("# Heading\n\nBody text.", encoding="utf-8")
+    _drop(page, _file_mime(dropped))
+    assert page.text_edit.toPlainText() == "# Heading\n\nBody text."
+
+
+def test_dropping_an_unsupported_file_inserts_nothing_and_loads_nothing(
+    qtbot, qapp, recording_driver_factory, tmp_path
+):
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("existing text")
+    dropped = []
+    page.text_edit.fileDropped.connect(dropped.append)
+    image = tmp_path / "picture.png"
+    image.write_bytes(b"\x89PNG\r\n")
+
+    event = _drop(page, _file_mime(image))
+
+    assert page.text_edit.toPlainText() == "existing text"
+    assert dropped == []
+    assert not event.isAccepted()
+
+
+def test_dropping_a_web_link_inserts_nothing(qtbot, qapp, recording_driver_factory):
+    from PySide6.QtCore import QMimeData, QUrl
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("existing text")
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://example.com/page")])
+    event = _drop(page, mime)
+    assert page.text_edit.toPlainText() == "existing text"
+    assert not event.isAccepted()
+
+
+def test_dropping_a_link_that_also_carries_text_still_inserts_nothing(
+    qtbot, qapp, recording_driver_factory
+):
+    # Dragging a link out of a browser puts both the URL and its text on the drag.
+    from PySide6.QtCore import QMimeData, QUrl
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://example.com/page")])
+    mime.setText("https://example.com/page")
+    _drop(page, mime)
+    assert page.text_edit.toPlainText() == ""
+
+
+def test_dropping_an_unreadable_txt_file_inserts_nothing(qtbot, qapp, recording_driver_factory, tmp_path):
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("existing text")
+    broken = tmp_path / "binary.txt"
+    broken.write_bytes(b"\xff\xfe\x00 not utf-8 \x80\x81")
+    _drop(page, _file_mime(broken))
+    assert page.text_edit.toPlainText() == "existing text"
+
+
+def test_dropping_a_missing_txt_file_inserts_nothing(qtbot, qapp, recording_driver_factory, tmp_path):
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("existing text")
+    _drop(page, _file_mime(tmp_path / "gone.txt"))
+    assert page.text_edit.toPlainText() == "existing text"
+
+
+def test_drag_enter_accepts_a_txt_file_and_text_but_refuses_other_files(
+    qtbot, qapp, recording_driver_factory, tmp_path
+):
+    from PySide6.QtCore import QMimeData, QPoint
+    from PySide6.QtCore import Qt as QtCoreQt
+    from PySide6.QtGui import QDragEnterEvent
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+
+    def enter(mime) -> bool:
+        event = QDragEnterEvent(
+            QPoint(10, 10),
+            QtCoreQt.DropAction.CopyAction,
+            mime,
+            QtCoreQt.MouseButton.LeftButton,
+            QtCoreQt.KeyboardModifier.NoModifier,
+        )
+        event.setAccepted(False)
+        page.text_edit.dragEnterEvent(event)
+        return event.isAccepted()
+
+    text_file = tmp_path / "a.txt"
+    text_file.write_text("x")
+    image = tmp_path / "a.png"
+    image.write_bytes(b"x")
+    text_mime = QMimeData()
+    text_mime.setText("some text")
+
+    assert enter(_file_mime(text_file)) is True
+    assert enter(text_mime) is True
+    assert enter(_file_mime(image)) is False
+
+
+def test_pasting_a_copied_file_inserts_nothing(qtbot, qapp, recording_driver_factory, tmp_path):
+    # Copy a file in the file manager, paste into the box: no path, no file:// URL.
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    page.set_text("existing text")
+    note = tmp_path / "note.txt"
+    note.write_text("x")
+    mime = _file_mime(note)
+    assert page.text_edit.canInsertFromMimeData(mime) is False
+    page.text_edit.insertFromMimeData(mime)
+    assert page.text_edit.toPlainText() == "existing text"
+
+    # ... even when the file manager also supplies the path as text.
+    mime.setText(str(note))
+    assert page.text_edit.canInsertFromMimeData(mime) is False
+    page.text_edit.insertFromMimeData(mime)
+    assert page.text_edit.toPlainText() == "existing text"
+
+
+def test_pasting_a_bare_link_reference_inserts_nothing(qtbot, qapp, recording_driver_factory):
+    from PySide6.QtCore import QMimeData, QUrl
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://example.com/page")])
+    assert page.text_edit.canInsertFromMimeData(mime) is False
+    page.text_edit.insertFromMimeData(mime)
+    assert page.text_edit.toPlainText() == ""
+
+
+def test_pasting_a_web_link_that_comes_with_its_own_text_still_works(
+    qtbot, qapp, recording_driver_factory
+):
+    # Safari puts both a URL and the URL's text on the clipboard; the text is what the user
+    # copied and expects to paste.
+    from PySide6.QtCore import QMimeData, QUrl
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://example.com/page")])
+    mime.setText("https://example.com/page")
+    assert page.text_edit.canInsertFromMimeData(mime) is True
+    page.text_edit.insertFromMimeData(mime)
+    assert page.text_edit.toPlainText() == "https://example.com/page"
+
+
+def test_plain_text_can_always_be_inserted(qtbot, qapp, recording_driver_factory):
+    from PySide6.QtCore import QMimeData
+
+    page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
+    mime = QMimeData()
+    mime.setText("hello")
+    assert page.text_edit.canInsertFromMimeData(mime) is True
