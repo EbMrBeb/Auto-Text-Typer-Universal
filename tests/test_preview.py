@@ -89,6 +89,22 @@ def test_typo_with_delayed_notice_reports_caught_n_chars_later():
     assert "caught 2 chars later" in events[0].detail
 
 
+def test_typo_caught_one_char_later_is_singular():
+    # "x" for "y", then one more correct char ("a") typed before noticing.
+    actions = [
+        KeyPress("x"),
+        KeyPress("a"),
+        Backspace(1),
+        Backspace(1),
+        KeyPress("y"),
+        KeyPress("a"),
+    ]
+    events, _ = describe(actions, "ya")
+    assert events[0].kind == "typo"
+    assert "caught 1 char later" in events[0].detail
+    assert "1 chars" not in events[0].detail
+
+
 # --- revision vs typo classification -------------------------------------
 
 
@@ -260,6 +276,12 @@ def test_pause_over_800ms_under_break_threshold_is_a_pause():
     events, summary = describe([Pause(1_000.0)], "")
     assert [e.kind for e in events] == ["pause"]
     assert summary.break_count == 0
+
+
+def test_pause_event_detail_reads_in_seconds_not_raw_milliseconds():
+    events, _ = describe([Pause(3_100.0)], "")
+    assert events[0].detail == "paused for 3.1s"
+    assert "ms" not in events[0].detail
 
 
 def test_pause_at_exactly_800ms_is_not_reported():

@@ -96,7 +96,8 @@ def _describe_run(kind: str, deleted: str, retyped: str) -> str:
     wrong = deleted[: len(deleted) - tail_len]
     correct = retyped[: len(retyped) - tail_len]
     if tail_len:
-        return f"typed {wrong!r} for {correct!r}, caught {tail_len} chars later"
+        unit = "char" if tail_len == 1 else "chars"
+        return f"typed {wrong!r} for {correct!r}, caught {tail_len} {unit} later"
     return f"typed {wrong!r} for {correct!r}"
 
 
@@ -219,7 +220,7 @@ def describe(actions: list[Action], text: str) -> tuple[list[PreviewEvent], Prev
                     break_count += 1
                     record("break", len(buffer), f"took a break for {ms / 1000:.0f}s")
                 elif ms > _PAUSE_THRESHOLD_MS:
-                    record("pause", len(buffer), f"paused for {ms:.0f}ms")
+                    record("pause", len(buffer), f"paused for {ms / 1000:.1f}s")
             case Format():
                 # Never ends a run (a correction may need to re-apply a run's
                 # styles between its backspaces and its retype) and never
