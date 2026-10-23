@@ -11,3 +11,6 @@ dist/
 # Scratch previews written by packaging/make_icons.py for eyeballing the
 # hardest (smallest) icon size -- not one of the real generated assets.
 assets/_preview/
+
+# macOS Finder metadata
+.DS_Store
