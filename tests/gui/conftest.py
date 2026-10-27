@@ -20,8 +20,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
-    """Redirect the profiles config file to an isolated temp path for every test."""
+    """Redirect the profiles config and the app settings to isolated temp paths for every test.
+
+    Both the typing-profile file (``AUTO_TEXT_TYPER_CONFIG``) and the app
+    preferences file (``AUTO_TEXT_TYPER_SETTINGS``) are pointed inside
+    ``tmp_path`` so no GUI test can read or write the real files.
+    """
     monkeypatch.setenv("AUTO_TEXT_TYPER_CONFIG", str(tmp_path / "profiles.toml"))
+    monkeypatch.setenv("AUTO_TEXT_TYPER_SETTINGS", str(tmp_path / "settings.json"))
 
 
 @pytest.fixture
@@ -31,14 +37,26 @@ def recording_driver_factory():
     sleeping and no countdown -- fast, deterministic, and it never touches
     the keyboard. Returns ``(factory, keyboards)`` where ``keyboards`` collects
     every ``RecordingKeyboard`` built, so a test can inspect what was "typed".
+
+    The factory accepts the optional ``keymap`` keyword ``RunController`` passes
+    when it types a formatted document, and records each keymap it was given in
+    ``factory.keymaps`` -- so a test can check which editor's shortcuts a run
+    was built for.
     """
     from auto_essay_typer.driver import Driver, RecordingKeyboard
 
     keyboards: list[RecordingKeyboard] = []
 
-    def factory() -> Driver:
+    def factory(keymap=None) -> Driver:
         keyboard = RecordingKeyboard()
         keyboards.append(keyboard)
-        return Driver(keyboard=keyboard, sleep=lambda _seconds: None, countdown_seconds=0)
+        factory.keymaps.append(keymap)
+        return Driver(
+            keyboard=keyboard,
+            sleep=lambda _seconds: None,
+            countdown_seconds=0,
+            keymap=keymap,
+        )
 
+    factory.keymaps = []
     return factory, keyboards
