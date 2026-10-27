@@ -11,10 +11,26 @@ Two layers, so the part that touches the operating system can be swapped out:
   :class:`HotkeyError` carrying a plain-language reason.
 * :class:`HotkeyService` is the Qt-facing object the rest of the GUI uses. It
   starts lazily (nothing is created until :meth:`HotkeyService.apply` is
-  called with ``enabled=True``), builds and starts the backend on a
-  short-lived worker thread so a slow or hanging start can never block the GUI
-  thread, and delivers hotkey presses as ordinary Qt signals. The listener
-  thread only ever *emits signals*; it never touches a widget.
+  called with ``enabled=True``), *builds* the backend and its listener on the
+  GUI thread (see below), *starts* it on a short-lived worker thread so a slow
+  or hanging start can never block the GUI thread, and delivers hotkey presses
+  as ordinary Qt signals. The listener thread only ever *emits signals*; it
+  never touches a widget.
+
+Why the listener is built on the main thread. On macOS, once a GUI event loop is
+running, the Text Services call that reads the keyboard layout
+(``TISCopyCurrentKeyboardInputSource``) asserts that it is on the main dispatch
+queue, and the OS answers a call from any other thread with ``SIGTRAP`` -- no
+Python exception, the whole process just dies (exit status 133). pynput's
+``Listener._run`` makes that call, via ``keycode_context()``, *on the listener's
+own thread*, so a stock ``GlobalHotKeys`` started under a running GUI kills the
+app even when it was built on the main thread. :func:`_macos_global_hotkeys_class`
+therefore reads the layout once, in the constructor (which runs on the GUI
+thread because the service builds the listener there), and the listener thread
+reuses that value instead of asking the OS again. Everything else the listener
+thread does -- the event tap, the run loop, decoding key events -- is safe off
+the main thread. (The same limit is described at ``driver.preload_keyboard_backend``,
+which handles the other half of the problem: the ``Controller`` that types.)
 
 Failure is always soft. If the listener cannot start (no permission, Wayland,
 no display, pynput missing, ...) the service logs it, moves to the
@@ -82,7 +98,13 @@ class HotkeyError(Exception):
 
 
 class HotkeyBackend(Protocol):
-    """What :class:`HotkeyService` needs from the thing that listens to the keyboard."""
+    """What :class:`HotkeyService` needs from the thing that listens to the keyboard.
+
+    The service builds a backend with its factory on the **GUI thread**, then
+    calls :meth:`prepare` (if the backend has one) on that same thread, and only
+    then hands the backend to a worker thread for :meth:`start`, which may block.
+    ``prepare`` is where anything that must happen on the main thread belongs.
+    """
 
     def start(self, bindings: Mapping[str, Callable[[], None]]) -> None:
         """Listen for ``{pynput hotkey text: callback}``; block until listening or raise :class:`HotkeyError`."""
@@ -101,10 +123,58 @@ def _default_listener_factory(bindings: Mapping[str, Callable[[], None]]) -> Any
 
     Imported lazily: ``pynput.keyboard`` can fail at import time on a headless
     Linux box, and nothing should pay for it until hotkeys are actually wanted.
+
+    On macOS the listener is the :func:`_macos_global_hotkeys_class` variant
+    that never asks the OS for the keyboard layout from its own thread. Call
+    this on the main thread (``HotkeyService`` does): that is where the layout
+    is read.
     """
     from pynput.keyboard import GlobalHotKeys
 
+    if platforms.current_os() is OperatingSystem.MACOS:
+        return _macos_global_hotkeys_class()(dict(bindings))
     return GlobalHotKeys(dict(bindings))
+
+
+@functools.cache
+def _macos_global_hotkeys_class() -> type:
+    """``GlobalHotKeys`` for macOS, safe to start while a GUI event loop is running.
+
+    pynput's darwin ``Listener._run`` is::
+
+        with keycode_context() as context:   # TISCopyCurrentKeyboardInputSource ...
+            self._context = context
+            super()._run()                   # the event tap and its run loop
+
+    and it runs on the listener's own thread. Under a running GUI that Text
+    Services call is only allowed on the main thread, and anywhere else the OS
+    kills the process with ``SIGTRAP`` (see the module docstring). The value it
+    yields is a plain ``(keyboard type, layout bytes)`` tuple, so it can just as
+    well be read once, on the main thread, and handed to the listener thread --
+    which is all this subclass does: the constructor (main thread) reads it, and
+    ``_run`` (listener thread) installs it and goes straight to the event tap
+    without asking the OS again.
+
+    Built lazily because ``pynput._util.darwin`` imports the macOS frameworks.
+    """
+    from pynput._util.darwin import ListenerMixin, keycode_context
+    from pynput.keyboard import GlobalHotKeys
+
+    class MacOSGlobalHotKeys(GlobalHotKeys):
+        def __init__(self, hotkeys: Mapping[str, Callable[[], None]], *args: Any, **kwargs: Any) -> None:
+            super().__init__(hotkeys, *args, **kwargs)
+            # Constructed on the GUI thread: this is the one place the OS is asked.
+            with keycode_context() as context:
+                self._main_thread_context = context
+
+        def _run(self) -> None:
+            self._context = self._main_thread_context
+            try:
+                ListenerMixin._run(self)  # what the stock _run wraps in keycode_context()
+            finally:
+                self._context = None
+
+    return MacOSGlobalHotKeys
 
 
 class PynputHotkeyBackend:
@@ -147,6 +217,8 @@ class PynputHotkeyBackend:
         self._session_provider = session_provider or (lambda: platforms.linux_session())
         self._lock = threading.Lock()
         self._listener: Any = None
+        #: A listener built by :meth:`prepare` and not yet started, with the bindings it was built for.
+        self._prepared: tuple[dict[str, Callable[[], None]], Any] | None = None
         self._note = ""
 
     @property
@@ -159,19 +231,42 @@ class PynputHotkeyBackend:
 
     # -- lifecycle ------------------------------------------------------------------
 
+    def prepare(self, bindings: Mapping[str, Callable[[], None]]) -> None:
+        """Build the listener for ``bindings`` on the *calling* thread, without starting it.
+
+        ``HotkeyService`` calls this on the GUI thread, because building the
+        listener is what reads the keyboard layout on macOS, and macOS only allows
+        that on the main thread (see the module docstring). It never blocks: the
+        blocking part, :meth:`start`, then runs on a worker thread and uses the
+        listener built here. Raises :class:`HotkeyError` for hotkeys pynput
+        rejects or a keyboard library that cannot load.
+        """
+        if not bindings:
+            raise HotkeyError("There are no hotkeys to listen for")
+        listener = self._create_listener(bindings)
+        with self._lock:
+            self._prepared = (dict(bindings), listener)
+
     def start(self, bindings: Mapping[str, Callable[[], None]]) -> None:
         """Start listening; returns once the listener is up, or raises :class:`HotkeyError`.
 
         Blocks for up to ``ready_timeout`` plus ``settle_seconds``, so call it
         from a worker thread (``HotkeyService`` does). Calling it again first
-        stops the previous listener.
+        stops the previous listener. Uses the listener :meth:`prepare` built for
+        these same ``bindings``; without one (or for different bindings) it
+        builds the listener itself, on whichever thread it was called from.
         """
         if not bindings:
             raise HotkeyError("There are no hotkeys to listen for")
+        with self._lock:
+            prepared, self._prepared = self._prepared, None
         self.stop()
         self._note = ""
 
-        listener = self._create_listener(bindings)
+        if prepared is not None and prepared[0] == dict(bindings):
+            listener = prepared[1]
+        else:
+            listener = self._create_listener(bindings)
         try:
             # pynput's listeners already are daemon threads; insist on it so a
             # listener can never keep the interpreter alive at exit.
@@ -194,9 +289,14 @@ class PynputHotkeyBackend:
         self._note = self._running_note()
 
     def stop(self) -> None:
-        """Stop listening. Idempotent; never raises."""
+        """Stop listening. Idempotent; never raises.
+
+        A listener that :meth:`prepare` built but nothing started is simply
+        dropped: it has no thread to stop or join.
+        """
         with self._lock:
             listener, self._listener = self._listener, None
+            self._prepared = None
         if listener is not None:
             self._discard(listener)
 
@@ -380,8 +480,18 @@ class HotkeyService(QObject):
     automatically from ``QCoreApplication.aboutToQuit`` and, as a fallback,
     at interpreter exit.
 
-    ``backend_factory`` builds a :class:`HotkeyBackend`; it is called on the
-    worker thread, so even constructing a backend never blocks the GUI.
+    ``backend_factory`` builds a :class:`HotkeyBackend`. It is called on the
+    **GUI thread**, followed by the backend's ``prepare(bindings)`` when it has
+    one, because building a pynput listener reads the keyboard layout and macOS
+    kills the process if that happens anywhere else (see the module docstring).
+    Both are quick and never block; only the backend's ``start`` -- which waits
+    for the listener to come up -- runs on a worker thread. ``apply`` called from
+    another thread hands the work over to the GUI thread rather than building
+    the listener where it was called.
+
+    Connect the request signals to methods of objects that live in the GUI
+    thread (or with a queued connection): a plain function or lambda connected
+    the default way is called directly on the listener's thread.
     """
 
     startRequested = Signal()
@@ -390,6 +500,8 @@ class HotkeyService(QObject):
     statusChanged = Signal(str, str)
     # (generation, ok, detail) from the worker thread back to the GUI thread.
     _startFinished = Signal(int, bool, str)
+    # (enabled, hotkeys) from any thread to the GUI thread, which does the building.
+    _applyRequested = Signal(bool, object)
 
     def __init__(
         self,
@@ -414,6 +526,7 @@ class HotkeyService(QObject):
             "stop": self.stopRequested,
         }
         self._startFinished.connect(self._on_start_finished, Qt.ConnectionType.QueuedConnection)
+        self._applyRequested.connect(self._apply_on_gui_thread, Qt.ConnectionType.QueuedConnection)
         _LIVE_SERVICES.add(self)
 
     # -- read-only status -----------------------------------------------------------
@@ -439,10 +552,20 @@ class HotkeyService(QObject):
         unrelated settings change never re-attempts a start the OS refused. A
         changed configuration stops the old listener and starts a new one.
         ``enabled=False`` stops everything. Never raises.
+
+        The backend (and, on macOS, the listener inside it) is built here, on
+        the GUI thread; called from any other thread this queues itself onto
+        the GUI thread instead of building where it was called.
         """
+        if threading.current_thread() is not threading.main_thread():
+            self._applyRequested.emit(bool(enabled), dict(hotkeys))
+            return
+        self._apply_on_gui_thread(bool(enabled), dict(hotkeys))
+
+    def _apply_on_gui_thread(self, enabled: bool, hotkeys: Mapping[str, str]) -> None:
         self._hook_shutdown()
         hotkeys = dict(hotkeys)
-        self._requested = (bool(enabled), hotkeys)
+        self._requested = (enabled, hotkeys)
 
         if not enabled:
             self._shutdown(forget_config=True)
@@ -468,9 +591,23 @@ class HotkeyService(QObject):
             for action, text in by_action.items()
         }
         self._set_status(STATE_STARTING, "")
+
+        # Built on this (the GUI) thread -- see the module docstring for why.
+        backend: HotkeyBackend | None = None
+        try:
+            backend = self._backend_factory()
+            prepare = getattr(backend, "prepare", None)
+            if callable(prepare):
+                prepare(bindings)
+        except Exception as exc:  # noqa: BLE001 - anything at all must degrade, not crash
+            if backend is not None:
+                _stop_backend(backend)
+            self._set_status(STATE_UNAVAILABLE, self._failure_detail(exc))
+            return
+
         threading.Thread(
             target=self._start_worker,
-            args=(generation, bindings),
+            args=(generation, backend, bindings),
             name="auto-text-typer-hotkeys-start",
             daemon=True,
         ).start()
@@ -536,31 +673,47 @@ class HotkeyService(QObject):
 
     # -- internals: worker and listener threads -----------------------------------------
 
-    def _start_worker(self, generation: int, bindings: Mapping[str, Callable[[], None]]) -> None:
-        """Build and start the backend off the GUI thread, then report back.
+    @staticmethod
+    def _failure_detail(exc: BaseException) -> str:
+        """The plain-language reason for ``exc``, logged on the way. Any thread."""
+        if isinstance(exc, HotkeyError):
+            detail = str(exc) or _GENERIC_DETAIL
+            logger.warning("Global hotkeys unavailable: %s", detail)
+        elif isinstance(exc, ImportError):
+            detail = _IMPORT_DETAIL
+            logger.warning("Global hotkeys unavailable: %s (%s)", detail, exc)
+        else:
+            detail = f"{_GENERIC_DETAIL}: {exc}" if str(exc) else _GENERIC_DETAIL
+            logger.error("Global hotkeys failed to start", exc_info=exc)
+        return detail
+
+    def _start_worker(
+        self,
+        generation: int,
+        backend: HotkeyBackend,
+        bindings: Mapping[str, Callable[[], None]],
+    ) -> None:
+        """Start the (already built) ``backend`` off the GUI thread, then report back.
 
         The backend is *published* to ``self._backend`` under the lock only if
         this start's generation is still current. If ``stop()`` (or a newer
         ``apply()``) got there first, this thread stops its own backend
         instead -- so no listener can outlive a stop, whichever finishes first.
         """
-        backend: HotkeyBackend | None = None
+        with self._lock:
+            superseded = generation != self._generation
+        if superseded:  # stopped or re-applied before this thread got going: nothing to start
+            _stop_backend(backend)
+            return
+
         detail = ""
         ok = False
         try:
-            backend = self._backend_factory()
             backend.start(bindings)
             ok = True
             detail = str(getattr(backend, "note", "") or "")
-        except HotkeyError as exc:
-            detail = str(exc) or _GENERIC_DETAIL
-            logger.warning("Global hotkeys unavailable: %s", detail)
-        except ImportError as exc:
-            detail = _IMPORT_DETAIL
-            logger.warning("Global hotkeys unavailable: %s (%s)", detail, exc)
         except Exception as exc:  # noqa: BLE001 - anything at all must degrade, not crash
-            detail = f"{_GENERIC_DETAIL}: {exc}" if str(exc) else _GENERIC_DETAIL
-            logger.exception("Global hotkeys failed to start")
+            detail = self._failure_detail(exc)
 
         if ok:
             with self._lock:
@@ -568,9 +721,8 @@ class HotkeyService(QObject):
                 if current:
                     self._backend = backend
             if not current:
-                assert backend is not None
                 _stop_backend(backend)
-        elif backend is not None:
+        else:
             _stop_backend(backend)
 
         try:

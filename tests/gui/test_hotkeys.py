@@ -8,11 +8,19 @@ paths take no real time). The one test that touches real pynput only builds a
 
 Hotkey presses are fired from genuine background threads, as pynput's listener
 thread would, and the tests assert the Qt signal is delivered on the GUI thread.
+
+The backend (and the listener inside it) is *built on the main thread*: on macOS a
+pynput listener built or started anywhere else kills the whole process once a GUI
+is running, with a SIGTRAP and no Python error, so a regression there would not
+show up as a failing test on any other platform -- only as a crash for a user.
+The tests that pin it record ``threading.current_thread()`` where the thing is built.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import sys
 import threading
 import types
 
@@ -40,18 +48,28 @@ OTHER_HOTKEYS = {**HOTKEYS, "start": "<ctrl>+<alt>+<shift>+k"}
 
 
 class FakeBackend:
-    """A HotkeyBackend that records what the service does to it."""
+    """A HotkeyBackend that records what the service does to it, and on which thread."""
 
-    def __init__(self, *, start_error=None, stop_error=None, gate=None, note=""):
+    def __init__(self, *, start_error=None, stop_error=None, gate=None, note="", prepare_error=None):
+        self.built_on = threading.current_thread()
         self.start_error = start_error
         self.stop_error = stop_error
+        self.prepare_error = prepare_error
         self.gate = gate
         self.note = note
         self.bindings: dict | None = None
+        self.prepared_bindings: dict | None = None
+        self.prepare_thread: threading.Thread | None = None
         self.start_entered = threading.Event()
         self.start_thread: threading.Thread | None = None
         self.started = False
         self.stop_calls = 0
+
+    def prepare(self, bindings):
+        self.prepare_thread = threading.current_thread()
+        if self.prepare_error is not None:
+            raise self.prepare_error
+        self.prepared_bindings = dict(bindings)
 
     def start(self, bindings):
         self.start_thread = threading.current_thread()
@@ -179,7 +197,7 @@ def test_applying_disabled_never_starts_a_backend(make_service):
     assert recorder.statuses == []  # already off: nothing to announce
 
 
-def test_enabling_starts_the_backend_on_a_worker_thread_and_goes_active(qtbot, make_service):
+def test_enabling_builds_the_backend_on_the_gui_thread_and_starts_it_on_a_worker(qtbot, make_service):
     service, factory, recorder = make_service()
     service.apply(True, HOTKEYS)
 
@@ -188,11 +206,151 @@ def test_enabling_starts_the_backend_on_a_worker_thread_and_goes_active(qtbot, m
 
     (backend,) = factory.built
     assert backend.started
-    # Both building and starting the backend happen off the GUI thread.
-    assert factory.call_threads and threading.main_thread() not in factory.call_threads
+    # Building (and preparing) the backend happens on the GUI thread; only the blocking start
+    # runs on a worker, so a slow or hanging start can never freeze the window.
+    assert factory.call_threads == [threading.main_thread()]
+    assert backend.prepare_thread is threading.main_thread()
     assert backend.start_thread is not threading.main_thread()
     assert set(backend.bindings) == set(HOTKEYS.values())
     assert recorder.statuses == [("starting", ""), ("active", "")]
+
+
+# --- the backend is built on the main thread ------------------------------------------------
+#
+# The macOS crash this guards against: a pynput listener built or started off the main thread
+# makes the OS kill the process (SIGTRAP) once a GUI is running. Nothing in a test run on any
+# other OS (or on macOS under the offscreen platform) would notice a regression.
+
+
+class ConstructionRecordingBackend(FakeBackend):
+    """A backend *class* that notes the thread its ``__init__`` ran on, as a real one's would."""
+
+    instances: list["ConstructionRecordingBackend"] = []
+
+    def __init__(self):
+        super().__init__()
+        type(self).instances.append(self)
+
+
+def test_the_hotkey_backend_is_constructed_on_the_main_thread(qtbot):
+    ConstructionRecordingBackend.instances = []
+    service = HotkeyService(backend_factory=ConstructionRecordingBackend)
+    try:
+        service.apply(True, HOTKEYS)
+        wait_for_state(qtbot, service, "active")
+    finally:
+        service.stop()
+
+    (backend,) = ConstructionRecordingBackend.instances
+    assert backend.built_on is threading.main_thread()
+
+
+def test_the_listener_is_prepared_on_the_main_thread_and_only_started_on_a_worker(qtbot):
+    ConstructionRecordingBackend.instances = []
+    service = HotkeyService(backend_factory=ConstructionRecordingBackend)
+    try:
+        service.apply(True, HOTKEYS)
+        wait_for_state(qtbot, service, "active")
+    finally:
+        service.stop()
+
+    (backend,) = ConstructionRecordingBackend.instances
+    assert backend.prepare_thread is threading.main_thread()  # where a real listener is built
+    assert backend.start_thread is not threading.main_thread()  # where it may block
+    # The listener thread's callbacks (here: the bindings) are the ones the service made.
+    assert backend.prepared_bindings == backend.bindings
+
+
+def test_every_rebuild_also_happens_on_the_main_thread(qtbot, make_service):
+    service, factory, _recorder = make_service()
+    service.apply(True, HOTKEYS)
+    wait_for_state(qtbot, service, "active")
+    service.apply(True, OTHER_HOTKEYS)
+    qtbot.waitUntil(lambda: len(factory.built) == 2 and service.state == "active", timeout=3000)
+    service.retry()  # forgets the configuration, so this builds a third
+    qtbot.waitUntil(lambda: len(factory.built) == 3 and service.state == "active", timeout=3000)
+    service.apply(False, HOTKEYS)
+    service.apply(True, HOTKEYS)  # and toggling off and on a fourth
+    qtbot.waitUntil(lambda: len(factory.built) == 4 and service.state == "active", timeout=3000)
+
+    assert factory.call_threads == [threading.main_thread()] * 4
+    assert all(backend.built_on is threading.main_thread() for backend in factory.built)
+    assert all(backend.prepare_thread is threading.main_thread() for backend in factory.built)
+
+
+def test_apply_called_from_another_thread_still_builds_on_the_gui_thread(qtbot, make_service):
+    service, factory, _recorder = make_service()
+
+    fire_from_background_thread(lambda: service.apply(True, HOTKEYS))  # queued, not built here
+    assert factory.built == []
+    wait_for_state(qtbot, service, "active")
+
+    assert factory.call_threads == [threading.main_thread()]
+    assert factory.built[0].prepare_thread is threading.main_thread()
+
+
+def test_a_backend_without_a_prepare_step_still_works(qtbot):
+    class Plain:
+        def __init__(self):
+            self.started = False
+            self.stopped = 0
+
+        def start(self, bindings):
+            self.started = True
+
+        def stop(self):
+            self.stopped += 1
+
+    built: list[Plain] = []
+
+    def factory():
+        built.append(Plain())
+        return built[-1]
+
+    service = HotkeyService(backend_factory=factory)
+    try:
+        service.apply(True, HOTKEYS)
+        wait_for_state(qtbot, service, "active")
+    finally:
+        service.stop()
+    assert built[0].started and built[0].stopped == 1
+
+
+def test_a_prepare_that_fails_makes_the_service_unavailable_without_starting_anything(make_service):
+    failing = FakeBackend(prepare_error=HotkeyError("A hotkey is not a valid shortcut (<bogus>)"))
+    service, factory, recorder = make_service(failing)
+
+    service.apply(True, HOTKEYS)  # synchronous: nothing to wait for, no worker was started
+
+    assert service.state == "unavailable"
+    assert service.detail == "A hotkey is not a valid shortcut (<bogus>)"
+    assert recorder.statuses == [("starting", ""), ("unavailable", service.detail)]
+    assert failing.start_entered.is_set() is False
+    assert failing.stop_calls == 1  # the half-built backend is cleaned up
+    assert failing.prepare_thread is threading.main_thread()
+
+
+def test_an_unexpected_prepare_exception_is_contained_and_logged(make_service, caplog):
+    caplog.set_level(logging.DEBUG, logger="auto_essay_typer.gui.hotkeys")
+    service, _factory, _recorder = make_service(FakeBackend(prepare_error=RuntimeError("layout lookup failed")))
+
+    service.apply(True, HOTKEYS)
+
+    assert service.state == "unavailable"
+    assert "layout lookup failed" in service.detail
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+def test_a_start_that_was_superseded_before_its_thread_began_never_starts_the_backend(qtbot, qapp, make_service):
+    service, factory, _recorder = make_service()
+    service.apply(True, HOTKEYS)
+    service.stop()  # before the worker thread has had a chance to run
+    drain(qapp)
+
+    (backend,) = factory.built
+    # Either the worker noticed it was stale before starting, or it started and stopped at once.
+    assert backend.stop_calls >= 1
+    assert service.state == "off"
 
 
 def test_a_slow_start_never_blocks_the_caller(qtbot, make_service):
@@ -825,3 +983,224 @@ def test_the_default_factory_builds_a_real_but_unstarted_listener():
         pytest.skip(f"pynput.keyboard is not importable here: {exc}")
     assert not listener.is_alive()
     assert not listener.running
+
+
+# --- PynputHotkeyBackend: prepare() builds the listener, start() only starts it ---------------
+
+
+def test_prepare_builds_the_listener_without_starting_it_and_start_reuses_it():
+    backend, _clock, listeners = make_backend()
+
+    backend.prepare(BINDINGS)
+    assert len(listeners) == 1
+    assert listeners[0].started is False  # built, not listening
+    assert listeners[0].bindings == BINDINGS
+
+    backend.start(BINDINGS)
+    assert len(listeners) == 1  # no second listener was built
+    assert listeners[0].started is True
+    backend.stop()
+    assert listeners[0].stop_calls == 1
+
+
+def test_prepare_runs_the_listener_factory_on_the_calling_thread():
+    threads: list[threading.Thread] = []
+    clock = VirtualClock()
+
+    def factory(bindings):
+        threads.append(threading.current_thread())
+        return FakeListener(bindings, clock)
+
+    backend = PynputHotkeyBackend(factory, clock=clock, sleep=clock.sleep)
+
+    backend.prepare(BINDINGS)  # called from the test's main thread, as the service does
+
+    assert threads == [threading.main_thread()]
+
+
+def test_start_builds_a_different_listener_when_the_bindings_changed_since_prepare():
+    backend, _clock, listeners = make_backend()
+    other = {**BINDINGS, HOTKEYS["stop"]: lambda: None}
+
+    backend.prepare(BINDINGS)
+    backend.start(other)
+
+    assert len(listeners) == 2
+    assert listeners[0].started is False  # the prepared one was never used
+    assert listeners[1].started is True
+    assert listeners[1].bindings == other
+    backend.stop()
+
+
+def test_stopping_drops_a_prepared_listener_that_never_started():
+    backend, _clock, listeners = make_backend()
+    backend.prepare(BINDINGS)
+
+    backend.stop()  # nothing is running: the unstarted listener has no thread to stop or join
+    assert listeners[0].stop_calls == 0
+    assert listeners[0].join_timeouts == []
+
+    backend.start(BINDINGS)  # and a later start builds a fresh one
+    assert len(listeners) == 2 and listeners[1].started
+    backend.stop()
+
+
+def test_prepare_reports_hotkeys_pynput_rejects_and_a_missing_library():
+    def invalid(bindings):
+        raise ValueError("'<bogus>' is not a key")
+
+    def missing(bindings):
+        raise ModuleNotFoundError("No module named 'pynput'", name="pynput")
+
+    with pytest.raises(HotkeyError, match="not a valid shortcut"):
+        PynputHotkeyBackend(invalid).prepare(BINDINGS)
+    with pytest.raises(HotkeyError, match="not installed"):
+        PynputHotkeyBackend(missing).prepare(BINDINGS)
+
+
+def test_prepare_with_no_bindings_is_an_error():
+    backend, _clock, listeners = make_backend()
+    with pytest.raises(HotkeyError, match="no hotkeys"):
+        backend.prepare({})
+    assert listeners == []
+
+
+def test_the_default_backend_through_the_service_builds_its_listener_on_the_main_thread(qtbot):
+    """The whole chain -- service, real PynputHotkeyBackend, listener factory -- with a fake listener.
+
+    Records where the listener is *constructed* (the thing macOS cares about) and where it is
+    *started*, with nothing real installed.
+    """
+    constructed_on: list[threading.Thread] = []
+    started_on: list[threading.Thread] = []
+    clock = VirtualClock()
+
+    class RecordingListener(FakeListener):
+        def __init__(self, bindings):
+            constructed_on.append(threading.current_thread())
+            super().__init__(bindings, clock, ready_at=0.0)
+
+        def start(self):
+            started_on.append(threading.current_thread())
+            super().start()
+
+    service = HotkeyService(
+        backend_factory=lambda: PynputHotkeyBackend(RecordingListener, clock=clock, sleep=clock.sleep)
+    )
+    try:
+        service.apply(True, HOTKEYS)
+        wait_for_state(qtbot, service, "active")
+    finally:
+        service.stop()
+
+    assert constructed_on == [threading.main_thread()]
+    assert started_on and threading.main_thread() not in started_on
+
+
+# --- the macOS listener -------------------------------------------------------------------------
+#
+# pynput's darwin Listener._run reads the keyboard layout (Text Services) on the listener's own
+# thread, which macOS answers with SIGTRAP once a GUI is running -- even for a listener that was
+# built on the main thread. These tests replace the OS call and the event tap with recorders, so
+# nothing real runs; they pin *where* the layout is read.
+
+darwin_only = pytest.mark.skipif(
+    sys.platform != "darwin", reason="the macOS listener needs pynput's Quartz backend"
+)
+
+
+@pytest.fixture
+def macos_listener(monkeypatch):
+    """``(listener_class, layout_reads, run_calls)`` with pynput's OS-touching parts faked."""
+    from pynput._util import darwin as pynput_darwin
+
+    layout_reads: list[threading.Thread] = []
+    run_calls: list[tuple[threading.Thread, object]] = []
+
+    @contextlib.contextmanager
+    def fake_keycode_context():
+        layout_reads.append(threading.current_thread())
+        yield ("fake keyboard type", b"fake layout bytes")
+
+    def fake_event_tap_run(self):
+        run_calls.append((threading.current_thread(), self._context))
+
+    monkeypatch.setattr(pynput_darwin, "keycode_context", fake_keycode_context)
+    monkeypatch.setattr(pynput_darwin.ListenerMixin, "_run", fake_event_tap_run)
+    hotkeys._macos_global_hotkeys_class.cache_clear()  # rebuild against the fakes above
+    try:
+        yield hotkeys._macos_global_hotkeys_class(), layout_reads, run_calls
+    finally:
+        hotkeys._macos_global_hotkeys_class.cache_clear()  # never leave a class bound to fakes
+
+
+@darwin_only
+def test_the_macos_listener_reads_the_keyboard_layout_where_it_is_built(macos_listener):
+    listener_class, layout_reads, _run_calls = macos_listener
+
+    listener_class({HOTKEYS["start"]: noop})  # built on the main thread, as the service does
+
+    assert layout_reads == [threading.main_thread()]
+
+
+@darwin_only
+def test_the_macos_listener_thread_never_asks_the_os_for_the_keyboard_layout(macos_listener):
+    listener_class, layout_reads, run_calls = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})  # one read, on this thread
+
+    runner = threading.Thread(target=listener._run, name="fake-listener-thread")  # its own thread
+    runner.start()
+    runner.join(5)
+    assert not runner.is_alive()
+
+    assert layout_reads == [threading.main_thread()]  # still only the construction-time read
+    (ran_on, context_during_run) = run_calls[0]
+    assert ran_on is not threading.main_thread()
+    # ...and the run used the layout read at construction, exactly as the stock _run would have.
+    assert context_during_run == ("fake keyboard type", b"fake layout bytes")
+    assert listener._context is None  # cleared again afterwards, like the stock _run
+
+
+@darwin_only
+def test_the_macos_listener_is_a_global_hotkeys_listener(macos_listener):
+    from pynput.keyboard import GlobalHotKeys
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop, HOTKEYS["stop"]: noop})
+    assert isinstance(listener, GlobalHotKeys)
+    assert not listener.is_alive()  # nothing was started
+
+
+@darwin_only
+def test_the_default_factory_uses_the_macos_listener_on_macos_and_the_stock_one_elsewhere(
+    macos_listener, monkeypatch
+):
+    from pynput.keyboard import GlobalHotKeys
+
+    from auto_essay_typer import platforms
+
+    listener_class, _reads, _runs = macos_listener
+    bindings = {HOTKEYS["start"]: noop}
+
+    monkeypatch.setattr(platforms, "current_os", lambda *a, **k: OperatingSystem.MACOS)
+    assert type(hotkeys._default_listener_factory(bindings)) is listener_class
+
+    monkeypatch.setattr(platforms, "current_os", lambda *a, **k: OperatingSystem.LINUX)
+    assert type(hotkeys._default_listener_factory(bindings)) is GlobalHotKeys
+
+
+@darwin_only
+def test_the_macos_workaround_still_targets_what_pynputs_listener_does():
+    """A tripwire: the override exists because pynput's ``_run`` wraps the event tap in ``keycode_context``.
+
+    If a pynput upgrade stops doing that, the override is dead weight (or, worse, skips something
+    new) -- this fails so someone looks, instead of the app silently diverging from pynput.
+    """
+    import inspect
+
+    from pynput._util.darwin import ListenerMixin
+    from pynput.keyboard import GlobalHotKeys, Listener
+
+    assert "keycode_context" in inspect.getsource(Listener._run)
+    assert GlobalHotKeys._run is Listener._run  # GlobalHotKeys inherits it unchanged
+    assert callable(ListenerMixin._run)
