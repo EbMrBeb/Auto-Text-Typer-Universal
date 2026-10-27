@@ -11,6 +11,12 @@ including a live light/dark change -- with no code of its own. The
 *application* palette specifically: a widget's own palette is rewritten by the
 stylesheet's ``selection-background-color`` rule in every color group, which
 would erase the disabled-state colors ``build_palette`` defines.
+
+The one color that is not a palette role is the keyboard focus ring: it has to
+stand clear of the accent-filled track it encircles, which no palette role does
+(``Link`` is the accent). The stylesheet supplies it through the
+``focusRingColor`` property (``qproperty-focusRingColor`` in ``gui/theme.py``),
+the same ``focus_ring`` token every other control's ring uses.
 """
 
 from __future__ import annotations
@@ -79,11 +85,35 @@ class ToggleSwitch(QCheckBox):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._progress = 0.0
         self._animating = False
+        self._focus_ring_color = QColor()  # invalid until the stylesheet supplies one
         self._animation = QPropertyAnimation(self, b"progress", self)
         self._animation.setDuration(_ANIMATION_MS)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.finished.connect(self._on_animation_finished)
         self.toggled.connect(self._on_toggled)
+
+    # -- focus ring colour ---------------------------------------------------------
+
+    def _get_focus_ring_color(self) -> QColor:
+        return self._focus_ring_color
+
+    def _set_focus_ring_color(self, color: QColor) -> None:
+        self._focus_ring_color = QColor(color)
+        self.update()
+
+    #: Set by the app stylesheet (``qproperty-focusRingColor``); see the module docstring.
+    focusRingColor = Property(QColor, _get_focus_ring_color, _set_focus_ring_color)
+
+    def _ring_color(self) -> QColor:
+        """The colour of the keyboard focus ring.
+
+        The stylesheet's ``focus_ring`` token. Without a stylesheet (a switch
+        in a bare test window) the window-text colour, which is the same
+        near-black / near-white in both themes and never close to the track.
+        """
+        if self._focus_ring_color.isValid():
+            return self._focus_ring_color
+        return QApplication.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText)
 
     # -- animation -----------------------------------------------------------------
 
@@ -188,7 +218,7 @@ class ToggleSwitch(QCheckBox):
         painter.drawEllipse(knob)
 
         if self.isEnabled() and self.property(FOCUS_RING_PROPERTY):
-            ring = QPen(palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Link), 2)
+            ring = QPen(self._ring_color(), 2)
             painter.setPen(ring)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             # A 2px stroke centered 2px out from the track covers the margin's outer

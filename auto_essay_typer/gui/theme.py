@@ -40,7 +40,7 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import QApplication
 
 from auto_essay_typer.gui import icons
-from auto_essay_typer.gui.focus_ring import FocusVisibleFilter
+from auto_essay_typer.gui.focus_ring import install_focus_visible_filter
 from auto_essay_typer.platforms import OperatingSystem, current_os
 
 
@@ -317,8 +317,12 @@ def build_palette(tokens: Tokens) -> QPalette:
     disabled Type page during a run reads as disabled rather than merely
     unresponsive) -- not an exhaustive dump of every QPalette role.
 
-    Role usage by custom painting: ``Highlight`` is the "on" fill,
-    ``Mid`` the "off" track, ``Link`` the keyboard focus ring.
+    Role usage by custom painting: ``Highlight`` is the "on" fill and ``Mid`` the
+    "off" track. The keyboard focus ring is *not* a palette role: ``Link`` is the
+    accent-coloured link text, which is nearly the colour of the "on" track it
+    surrounds. A custom-painted widget gets the ring's colour (``focus_ring``,
+    the same near-black / near-white the stylesheet's rings use) from the
+    stylesheet's ``qproperty-focusRingColor`` instead -- see ``ToggleSwitch``.
     """
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(tokens.window))
@@ -717,6 +721,11 @@ _STYLESHEET = Template(
     QCheckBox[focusRing="true"]::indicator {
         border: 2px solid $focus_ring;
     }
+    /* The switch paints its own ring; this only hands it the colour, so the ring
+       follows a light/dark change when the stylesheet is re-applied. */
+    QCheckBox#ToggleSwitch {
+        qproperty-focusRingColor: $focus_ring;
+    }
 
     /* -- progress bar -------------------------------------------------------- */
 
@@ -888,7 +897,8 @@ def build_stylesheet(tokens: Tokens) -> str:
     :class:`~auto_essay_typer.gui.focus_ring.FocusVisibleFilter`) marks the
     widget that has *keyboard* focus, so rings appear on Tab but not on a click.
     ``ToggleSwitch`` is a custom-painted widget (``gui/controls.py``) and draws
-    itself from the palette; the stylesheet only sets its label font.
+    itself from the palette; the stylesheet only sets its label font and hands
+    it the colour of its focus ring (``qproperty-focusRingColor``).
     """
     t = tokens
     h = t.control_height
@@ -952,8 +962,9 @@ class ThemeManager(QObject):
             app.setFont(font)
         # Parented to this manager: when the manager goes away so does the
         # filter, which Qt then unregisters from the application on its own.
-        self._focus_filter = FocusVisibleFilter(self)
-        app.installEventFilter(self._focus_filter)
+        # Replaces the filter an earlier manager installed rather than stacking
+        # a second one beside it (see install_focus_visible_filter).
+        self._focus_filter = install_focus_visible_filter(app, self)
         QApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
         self.apply()
 

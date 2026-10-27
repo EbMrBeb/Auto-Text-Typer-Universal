@@ -159,6 +159,7 @@ def _non_text_pairs(t):
         "focus ring on surface": (t.focus_ring, t.surface),
         "focus ring on window": (t.focus_ring, t.window),
         "focus ring on the accent fill": (t.focus_ring, t.accent),
+        "focus ring on the switch's off-track": (t.focus_ring, t.border_strong),
         "slider / progress fill on its track": (t.accent_indicator, t.border),
         "slider / progress fill on the card": (t.accent_indicator, t.surface),
         "switch on-track on the card": (t.accent, t.surface),

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QColor, QFocusEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QLabel,
     QPlainTextEdit,
@@ -17,7 +18,13 @@ from PySide6.QtWidgets import (
 
 from auto_essay_typer.gui.controls import ScrollPageLayout, ToggleSwitch, switch_row
 from auto_essay_typer.gui.focus_ring import set_focus_ring
-from auto_essay_typer.gui.theme import DARK_TOKENS, LIGHT_TOKENS, ThemeManager, ThemeMode
+from auto_essay_typer.gui.theme import (
+    DARK_TOKENS,
+    LIGHT_TOKENS,
+    ThemeManager,
+    ThemeMode,
+    contrast_ratio,
+)
 
 # Where the track sits inside the widget: the focus ring's margin from the left edge, and a
 # vertically centered 36x20 pill. These mirror the constants in controls.py on purpose: a
@@ -207,6 +214,84 @@ def test_keyboard_focus_draws_a_ring_outside_the_track(qtbot, qapp):
     set_focus_ring(switch, False)
     qapp.processEvents()
     assert ring_pixel() == resting
+
+
+_THEME_CASES = [
+    pytest.param(ThemeMode.LIGHT, LIGHT_TOKENS, id="light"),
+    pytest.param(ThemeMode.DARK, DARK_TOKENS, id="dark"),
+]
+
+
+def _rgb(color: QColor) -> tuple[int, int, int]:
+    return color.red(), color.green(), color.blue()
+
+
+@pytest.mark.parametrize(("mode", "tokens"), _THEME_CASES)
+@pytest.mark.parametrize("checked", [False, True], ids=["off", "on"])
+def test_the_focus_ring_stands_clear_of_the_track_and_the_page_in_both_themes(
+    qtbot, qapp, mode, tokens, checked
+):
+    """The ring must be told apart from the track it encircles *and* from the page behind it.
+
+    Measured from rendered pixels rather than tokens. The ring was once painted in the accent
+    colour, which is (nearly) the colour of the "on" track: no token-level check of "ring on
+    page" notices that the ring and the control it surrounds are one violet blob.
+    """
+    switch = _switch(qtbot, qapp, checked=checked, mode=mode)
+    set_focus_ring(switch, True)
+    qapp.processEvents()
+
+    ring = _pixel(switch, 1)
+    track = _track_left(switch) if checked else _track_right(switch)
+    page = _pixel(switch, 0, 0)  # a corner of the widget: nothing but the page
+
+    assert contrast_ratio(ring.name(), track.name()) >= 3.0, "the ring is lost against the track"
+    assert contrast_ratio(ring.name(), page.name()) >= 3.0, "the ring is lost against the page"
+
+
+@pytest.mark.parametrize(("mode", "tokens"), _THEME_CASES)
+def test_the_focus_ring_is_drawn_in_the_design_systems_ring_colour(qtbot, qapp, mode, tokens):
+    switch = _switch(qtbot, qapp, mode=mode)
+    set_focus_ring(switch, True)
+    qapp.processEvents()
+    assert _rgb(_pixel(switch, 1)) == _rgb(QColor(tokens.focus_ring))
+    assert _rgb(_pixel(switch, 1)) != _rgb(QColor(tokens.accent_text))  # no longer the accent
+
+
+def test_the_focus_ring_follows_a_live_theme_change(qtbot, qapp):
+    # The manager is kept alive here (the theme changes through it), so its focus filter is live
+    # too: focus is moved the way a Tab does, through the filter, rather than by setting the ring
+    # by hand, which a late "window activated" focus event would then undo.
+    manager = ThemeManager(qapp, mode=ThemeMode.LIGHT)
+    switch = ToggleSwitch("Take breaks")
+    qtbot.addWidget(switch)
+    switch.show()
+    qtbot.waitUntil(switch.hasFocus, timeout=2000)  # the window's first focus, from its activation
+    QApplication.sendEvent(switch, QFocusEvent(QEvent.Type.FocusIn, Qt.FocusReason.TabFocusReason))
+    qapp.processEvents()
+    assert _rgb(_pixel(switch, 1)) == _rgb(QColor(LIGHT_TOKENS.focus_ring))
+
+    manager.set_mode(ThemeMode.DARK)
+    qapp.processEvents()
+    assert _rgb(_pixel(switch, 1)) == _rgb(QColor(DARK_TOKENS.focus_ring))
+
+
+def test_without_a_stylesheet_the_ring_falls_back_to_the_window_text_colour(qtbot, qapp):
+    # A switch in an application that never applied the theme's stylesheet still gets a ring
+    # that contrasts with its page: the palette's window text is the same near-black/near-white.
+    ThemeManager(qapp, mode=ThemeMode.LIGHT)
+    qapp.setStyleSheet("")
+    try:
+        switch = ToggleSwitch("Take breaks")
+        qtbot.addWidget(switch)
+        switch.show()
+        qtbot.waitExposed(switch)
+        assert not switch.focusRingColor.isValid()
+        set_focus_ring(switch, True)
+        qapp.processEvents()
+        assert _rgb(_pixel(switch, 1)) == _rgb(QColor(LIGHT_TOKENS.text))
+    finally:
+        ThemeManager(qapp, mode=ThemeMode.LIGHT)  # put the app stylesheet back for later tests
 
 
 # --- layout helpers -------------------------------------------------------------------------

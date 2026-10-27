@@ -118,3 +118,59 @@ def test_theme_manager_installs_the_filter_on_the_application(qtbot, qapp):
     assert _ring(button) is True
     QApplication.sendEvent(button, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.TabFocusReason))
     assert _ring(button) is False
+
+
+# --- one filter per application -------------------------------------------------------------
+#
+# Every ThemeManager installs a focus filter, and a test suite (or a settings reset) builds many.
+# Qt gives an event to every installed filter and each one *sets* the ring, so with a stack of
+# them the oldest, which remembers the oldest keyboard use, had the last word: a window shown
+# programmatically opened with its first control already ringed.
+
+
+def test_a_new_theme_manager_starts_without_the_keyboard_history_of_an_older_one(qtbot, qapp):
+    older = ThemeManager(qapp)
+    pressed_in_an_earlier_session = QPushButton("earlier")
+    qtbot.addWidget(pressed_in_an_earlier_session)
+    QApplication.sendEvent(pressed_in_an_earlier_session, _key(Qt.Key.Key_Tab))  # now "keyboard driven"
+
+    newer = ThemeManager(qapp)  # `older` is still alive, as a fixture or a window's reference keeps it
+    button = QPushButton("x")
+    qtbot.addWidget(button)
+    QApplication.sendEvent(button, _focus_in(Qt.FocusReason.ActiveWindowFocusReason))
+
+    assert _ring(button) is False
+    assert older is not newer
+
+
+def test_the_newest_theme_managers_filter_is_the_only_one_listening(qtbot, qapp):
+    older = ThemeManager(qapp)
+    newer = ThemeManager(qapp)
+    button = QPushButton("x")
+    qtbot.addWidget(button)
+
+    QApplication.sendEvent(button, _key(Qt.Key.Key_Space))  # keyboard use after both exist
+    QApplication.sendEvent(button, _focus_in(Qt.FocusReason.ActiveWindowFocusReason))
+    assert _ring(button) is True  # the newest filter saw the key and rings an indirect focus
+
+    QApplication.sendEvent(button, _click())
+    QApplication.sendEvent(button, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.MouseFocusReason))
+    QApplication.sendEvent(button, _focus_in(Qt.FocusReason.ActiveWindowFocusReason))
+    assert _ring(button) is False  # ...and the click cleared it; no older filter disagrees
+    assert older is not newer
+
+
+def test_replacing_the_filter_copes_with_a_theme_manager_that_was_destroyed(qtbot, qapp):
+    from PySide6.QtCore import QCoreApplication
+
+    doomed = ThemeManager(qapp)
+    doomed.setParent(None)
+    doomed.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+    survivor = ThemeManager(qapp)  # must not trip over the filter that went with `doomed`
+    button = QPushButton("x")
+    qtbot.addWidget(button)
+    QApplication.sendEvent(button, _focus_in(Qt.FocusReason.TabFocusReason))
+    assert _ring(button) is True
+    assert survivor is not None

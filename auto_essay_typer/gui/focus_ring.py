@@ -19,7 +19,10 @@ class only maintains the dynamic property.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt
+import weakref
+
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtWidgets import QWidget
 
 #: The dynamic property the stylesheet and custom-painted widgets read.
@@ -65,8 +68,9 @@ def set_focus_ring(widget: QWidget, visible: bool) -> None:
 class FocusVisibleFilter(QObject):
     """Application-wide event filter that maintains the ``focusRing`` property.
 
-    Install it on the ``QApplication`` (``ThemeManager`` does). It never
-    consumes an event.
+    Install it with :func:`install_focus_visible_filter` (``ThemeManager``
+    does), which keeps exactly one on the ``QApplication``. It never consumes
+    an event.
     """
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -93,3 +97,34 @@ class FocusVisibleFilter(QObject):
         elif kind in _POINTER_EVENTS:
             self._keyboard_driven = False
         return False
+
+
+#: The filter :func:`install_focus_visible_filter` last put on the application.
+_installed: weakref.ReferenceType[FocusVisibleFilter] | None = None
+
+
+def install_focus_visible_filter(
+    app: QCoreApplication, parent: QObject | None = None
+) -> FocusVisibleFilter:
+    """Install a new :class:`FocusVisibleFilter` on ``app``, replacing the one installed before.
+
+    There must only ever be one. Qt hands an event to every installed filter,
+    and each one *sets* the ring on a widget that gains focus, so with two the
+    answer comes from whichever runs last -- the oldest -- and that one may be
+    remembering a Tab key pressed long ago ("keyboard driven" until the next
+    mouse press). A window shown programmatically would then open with its
+    first control already ringed. Replacing the filter starts the new theme
+    manager's session with no input history, which is also what a fresh
+    application has.
+
+    ``parent`` owns the new filter (``ThemeManager`` passes itself), so the
+    filter goes away with it.
+    """
+    global _installed
+    previous = _installed() if _installed is not None else None
+    if previous is not None and shiboken6.isValid(previous):
+        app.removeEventFilter(previous)
+    focus_filter = FocusVisibleFilter(parent)
+    app.installEventFilter(focus_filter)
+    _installed = weakref.ref(focus_filter)
+    return focus_filter
