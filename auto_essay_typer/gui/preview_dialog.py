@@ -2,6 +2,13 @@
 
 Everything shown here comes straight from ``preview.describe`` -- this
 module does no planning-adjacent computation of its own, only layout.
+
+For a formatted document the dialog is also given the document itself, and the
+badge then verifies the plan against it with the project's governing check,
+``simulate_document(plan).normalized() == document.normalized()`` (see
+:func:`~auto_essay_typer.gui.document_session.verify_document_plan`): the text
+on screen *and* its headings, styles, alignment and lists must come out exactly
+as the document has them, or the badge says so loudly.
 """
 
 from __future__ import annotations
@@ -22,8 +29,10 @@ from PySide6.QtWidgets import (
 )
 
 from auto_essay_typer.actions import Action
+from auto_essay_typer.document import Document
 from auto_essay_typer.gui import icons
 from auto_essay_typer.gui.controls import focus_ring_bleed
+from auto_essay_typer.gui.document_session import verify_document_plan
 from auto_essay_typer.gui.theme import Tokens
 from auto_essay_typer.preview import PreviewEvent, describe
 from auto_essay_typer.progress import format_duration_words
@@ -87,12 +96,22 @@ class PreviewDialog(QDialog):
         text: str,
         tokens: Tokens,
         parent: QWidget | None = None,
+        *,
+        document: Document | None = None,
     ) -> None:
+        """``document``, when given, makes this the preview of a formatted document.
+
+        ``text`` is then the characters that will be typed (the document's plain
+        text) and ``actions`` the plan for ``document``; the badge verifies the
+        plan against the whole document, formatting included, instead of
+        against ``text`` alone.
+        """
         super().__init__(parent)
         self.setWindowTitle("Preview")
         self.resize(560, 640)
 
         events, summary = describe(actions, text)
+        document_check = verify_document_plan(actions, document) if document is not None else None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -111,9 +130,13 @@ class PreviewDialog(QDialog):
             ("Revisions", str(summary.revision_count)),
             ("Breaks", str(summary.break_count)),
         ]
+        if document is not None:
+            card_specs.append(("Formatting steps", f"{summary.format_count:,}"))
         for index, (card_title, value) in enumerate(card_specs):
-            row, position = divmod(index, 3) if index < 3 else (1, index - 3)
-            span = _GRID_COLUMNS // (3 if row == 0 else 2)
+            # Three cards to a row; a short last row's cards share the full width.
+            row, position = divmod(index, 3)
+            in_row = min(3, len(card_specs) - row * 3)
+            span = _GRID_COLUMNS // in_row
             cards.addWidget(_summary_card(card_title, value, tokens), row, position * span, 1, span)
         for column in range(_GRID_COLUMNS):
             cards.setColumnStretch(column, 1)
@@ -122,13 +145,24 @@ class PreviewDialog(QDialog):
         self.verification_badge = QLabel()
         self.verification_badge.setObjectName("StatusBadge")
         self.verification_badge.setWordWrap(True)
-        if summary.matches_input:
+        if document_check is None:
+            verified = summary.matches_input
+            subject = "text"
+            detail = ""
+            verified_text = "Output verified: matches your text exactly"
+        else:
+            verified = summary.matches_input and document_check.ok
+            subject = "document"
+            detail = document_check.detail
+            verified_text = "Output verified: matches your document exactly, formatting included"
+        if verified:
             self.verification_badge.setProperty("tone", "success")
-            self.verification_badge.setText("Output verified: matches your text exactly")
+            self.verification_badge.setText(verified_text)
         else:
             self.verification_badge.setProperty("tone", "danger")
             self.verification_badge.setText(
-                "Mismatch: the planned output does not match your text exactly — do not use this plan"
+                f"Mismatch: the planned output does not match your {subject} exactly — "
+                "do not use this plan" + (f" ({detail})" if detail else "")
             )
         layout.addWidget(self.verification_badge)
 
