@@ -103,14 +103,14 @@ _GOOGLE_DOCS_WINDOWS_LINUX: dict[FormatOp, Chord] = {
     FormatOp.OUTDENT: parse_chord("shift+tab"),
 }
 
+# ``TargetApp.notes`` is shown to the person using the app, under the "Typing
+# into" picker on the Type page, so every note below is written for them: plain
+# language, naming menus rather than FormatOps. The engineering rationale that
+# used to sit in these strings lives in the comments next to each keymap.
 _GOOGLE_DOCS_NOTES = (
-    "Transcribed from Google's own published Google Docs keyboard shortcuts "
-    "reference. On Windows and Linux, ALIGN_JUSTIFIED is deliberately left "
-    "out of this keymap: ctrl+shift+j opens the Chrome DevTools console "
-    "instead of reaching the document, so pressing it would break the "
-    "session instead of justifying a paragraph. adapt_document already "
-    "handles the absence gracefully, typing justified paragraphs as "
-    "left-aligned instead."
+    "Uses Google Docs' own keyboard shortcuts. On Windows and Linux, justified "
+    "text is typed left-aligned, because the shortcut for it opens the "
+    "browser's developer tools instead of reaching the document."
 )
 
 # --- microsoft-word ------------------------------------------------------------
@@ -151,13 +151,10 @@ _MICROSOFT_WORD_WINDOWS: dict[FormatOp, Chord] = {
 }
 
 _MICROSOFT_WORD_NOTES = (
-    "Not independently verified against a live Word install. Turn off "
-    "Word's Tools > AutoCorrect Options > AutoFormat As You Type list "
-    "options before typing: this keymap has no list FormatOps (see this "
-    "module's docstring for why), so adapt_document types list items as "
-    'plain text starting with a typed marker like "1. " or "• " -- '
-    "AutoFormat As You Type would otherwise convert that marker into a real "
-    "Word list out from under the plan."
+    "Before typing, turn off Word's AutoFormat As You Type list options "
+    "(Tools > AutoCorrect Options). Lists are typed as plain text starting "
+    "with a marker such as “1.” or “•”, and Word would otherwise turn that "
+    "marker into a list of its own and change what was typed."
 )
 
 # --- libreoffice-writer --------------------------------------------------------
@@ -195,13 +192,10 @@ _LIBREOFFICE_WRITER_WINDOWS_LINUX: dict[FormatOp, Chord] = {
 }
 
 _LIBREOFFICE_WRITER_NOTES = (
-    "Not independently verified against a live LibreOffice install. "
-    "CLEAR_FORMATTING has no macOS shortcut at all (cmd+m is the system "
-    "Minimize shortcut there), so this keymap defines it as keymaps.NO_OP "
-    "on macOS specifically -- Windows and Linux use ctrl+m. Turn off Tools "
-    "> AutoCorrect Options' automatic list recognition and replacement "
-    "options before typing, for the same reason as Word (see "
-    "microsoft-word's notes)."
+    "Before typing, turn off the automatic list recognition and replacement "
+    "options under Tools > AutoCorrect Options. Lists are typed as plain text "
+    "starting with a marker such as “1.” or “•”, and LibreOffice would "
+    "otherwise turn that marker into a list of its own, as Word does."
 )
 
 # --- textedit --------------------------------------------------------------------
@@ -217,10 +211,9 @@ _TEXTEDIT_MACOS: dict[FormatOp, Chord] = {
 }
 
 _TEXTEDIT_NOTES = (
-    "Not independently verified against a live TextEdit install. The "
-    "document must already be in rich text mode (Format > Make Rich Text) "
-    "before typing -- TextEdit's plain text mode has no formatting "
-    "shortcuts at all, so every Format action would silently do nothing."
+    "The document must be in rich text mode (Format > Make Rich Text) before "
+    "typing. In plain text mode TextEdit ignores formatting shortcuts, so "
+    "nothing would be formatted."
 )
 
 # --- plain-text ------------------------------------------------------------------
@@ -230,12 +223,10 @@ _PLAIN_TEXT: dict[FormatOp, Chord] = {
 }
 
 _PLAIN_TEXT_NOTES = (
-    "The universal fallback for any application not otherwise listed here. "
-    "CLEAR_FORMATTING is the only op defined (as keymaps.NO_OP), so "
-    "adapt_document flattens every paragraph style, alignment, run style, "
-    "and list to plain text with typed markers (see this module's "
-    "docstring). Works in literally any text field -- a browser form, a "
-    "terminal, a chat box -- at the cost of all visual formatting."
+    "For any app not listed here: a web form, a chat box, a terminal. "
+    "Everything is typed as plain text, so headings, bold, alignment and "
+    "lists lose their formatting, and list items start with a typed marker "
+    "such as “•” or “1.”."
 )
 
 

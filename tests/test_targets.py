@@ -273,3 +273,23 @@ def test_registry_to_simulation_pipeline_holds_for_every_target_and_os(target, o
             assert simulate_document(actions).normalized() == adapted.normalized(), (
                 f"doc {index}: seed={seed} pipeline diverged for {target.id}/{os_.value}"
             )
+
+
+# --- the notes are shown to the person using the app --------------------------------------------------
+
+#: Words that belong to the code, not to the person reading the Type page.
+_DEVELOPER_WORDS = ("keymap", "FormatOp", "adapt_document", "NO_OP", "CLEAR_FORMATTING", "ALIGN_", "SET_", "TOGGLE_")
+
+
+@pytest.mark.parametrize("target_id", _EXPECTED_IDS)
+def test_every_target_note_is_plain_language_fit_to_show_a_user(target_id):
+    note = get_target(target_id).notes
+    assert note.strip() == note and note.endswith(".")
+    assert 40 <= len(note) <= 320, "long enough to say something, short enough to sit under a picker"
+    assert not any(word in note for word in _DEVELOPER_WORDS), note
+
+
+def test_the_notes_that_ask_for_a_setting_change_name_the_menu_to_find_it_in():
+    assert "AutoFormat As You Type" in get_target("microsoft-word").notes
+    assert "AutoCorrect Options" in get_target("libreoffice-writer").notes
+    assert "Make Rich Text" in get_target("textedit").notes

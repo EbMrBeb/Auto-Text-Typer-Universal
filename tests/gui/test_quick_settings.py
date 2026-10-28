@@ -53,3 +53,38 @@ def test_mistake_stops_values_and_labels():
 )
 def test_nearest_mistake_stop_index(rate, expected_index):
     assert nearest_mistake_stop_index(rate) == expected_index
+
+
+# -- the "Typing into" editor picker ----------------------------------------------------------------
+
+from auto_essay_typer import targets  # noqa: E402
+from auto_essay_typer.gui.quick_settings import initial_target_id, target_caution  # noqa: E402
+from auto_essay_typer.platforms import OperatingSystem  # noqa: E402
+
+
+@pytest.mark.parametrize("os_", list(OperatingSystem))
+def test_the_saved_editor_is_selected_when_this_system_offers_it(os_):
+    choices = targets.targets_for(os_)
+    for target in choices:
+        assert initial_target_id(target.id, choices) == target.id
+
+
+def test_an_editor_this_system_does_not_offer_falls_back_to_the_first_one():
+    linux = targets.targets_for(OperatingSystem.LINUX)
+    # Word has no Linux release and TextEdit exists only on macOS.
+    assert initial_target_id("microsoft-word", linux) == linux[0].id
+    assert initial_target_id("textedit", linux) == linux[0].id
+    assert initial_target_id("no-such-editor", linux) == linux[0].id
+
+
+def test_only_editors_whose_shortcuts_are_unchecked_get_a_caution():
+    for target in targets.TARGET_APPS.values():
+        caution = target_caution(target)
+        assert bool(caution) is (not target.verified), target.id
+
+
+def test_the_caution_says_the_shortcuts_are_best_effort_and_where_to_change_them():
+    caution = target_caution(targets.get_target("microsoft-word"))
+    assert "Microsoft Word" in caution
+    assert "best effort" in caution
+    assert "Advanced page" in caution

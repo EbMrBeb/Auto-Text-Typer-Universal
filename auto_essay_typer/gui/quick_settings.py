@@ -7,6 +7,10 @@ widget. ``pages/type_page.py`` is the only importer.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from auto_essay_typer.targets import TargetApp
+
 #: Speed slider bounds, in words per minute.
 SPEED_MIN = 20
 SPEED_MAX = 160
@@ -54,4 +58,34 @@ def nearest_mistake_stop_index(typo_rate_per_100: float) -> int:
     return min(
         range(len(MISTAKE_STOPS)),
         key=lambda i: abs(MISTAKE_STOPS[i][0] - typo_rate_per_100),
+    )
+
+
+# -- the "Typing into" editor picker ---------------------------------------------------------------
+
+
+def initial_target_id(saved_id: str, choices: Sequence[TargetApp]) -> str:
+    """The editor the picker opens on: the saved choice if this system offers it, else the first.
+
+    ``choices`` is ``targets.targets_for(current_os())`` -- Microsoft Word has
+    no Linux release, TextEdit exists only on macOS -- so a settings file
+    carried over from another machine may name an editor that is not listed here.
+    """
+    ids = [target.id for target in choices]
+    return saved_id if saved_id in ids else ids[0]
+
+
+def target_caution(target: TargetApp) -> str:
+    """A reminder shown under an editor whose shortcuts have not been checked, or ``""``.
+
+    Only the Google Docs shortcuts are transcribed from the vendor's own
+    reference (``TargetApp.verified``); the rest are best-effort, so the person
+    is told they may need adjusting and where.
+    """
+    if target.verified:
+        return ""
+    return (
+        f"The {target.name} shortcuts are a best effort and haven't been checked against a "
+        "live copy. If something doesn't format as expected, you can change them on the "
+        "Advanced page."
     )
