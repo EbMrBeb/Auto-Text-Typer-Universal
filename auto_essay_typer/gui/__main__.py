@@ -20,10 +20,13 @@ from auto_essay_typer.driver import preload_keyboard_backend
 if TYPE_CHECKING:  # the Qt classes are imported inside the functions that use them
     from PySide6.QtWidgets import QApplication
 
+    from auto_essay_typer.driver import Driver, Keyboard
+    from auto_essay_typer.gui.hotkeys import HotkeyService
     from auto_essay_typer.gui.main_window import MainWindow
     from auto_essay_typer.gui.settings_store import SettingsStore
     from auto_essay_typer.gui.shell import AppShell
     from auto_essay_typer.gui.tray import AppTray
+    from auto_essay_typer.platforms import PermissionStatus
 
 APP_NAME = "Auto Text Typer"
 ORG_NAME = "Auto Text Typer"
@@ -127,11 +130,11 @@ def launch(
     app: QApplication,
     *,
     settings_store: SettingsStore | None = None,
-    tray: AppTray | None = None,
-    hotkey_service=None,
-    driver_factory: Callable[..., object] | None = None,
-    keyboard_factory: Callable[[], object] | None = None,
-    permission_checker: Callable[[], object] | None = None,
+    tray_factory: Callable[[MainWindow], AppTray] | None = None,
+    hotkey_service: HotkeyService | None = None,
+    driver_factory: Callable[..., Driver] | None = None,
+    keyboard_factory: Callable[[], Keyboard] | None = None,
+    permission_checker: Callable[[], PermissionStatus] | None = None,
     quit_app: Callable[[], None] | None = None,
 ) -> tuple[MainWindow, AppShell]:
     """Everything the app does on launch except enter the event loop.
@@ -141,9 +144,9 @@ def launch(
     walkthrough opens (on a first run) and the global hotkeys start (when they are enabled)
     once the event loop is running and the window is on screen. Returns ``(window, shell)``.
 
-    The keyword arguments exist so tests can supply fakes (a tray, a hotkey service built on a
-    fake backend, a recording keyboard, a permission probe, a ``quit_app`` that does not quit
-    the test runner); the real app passes none of them.
+    The keyword arguments exist so tests can supply fakes (a tray built over the window's run
+    controller, a hotkey service built on a fake backend, a recording keyboard, a permission
+    probe, a ``quit_app`` that does not quit the test runner); the real app passes none of them.
 
     Must be called on the main thread, after ``driver.preload_keyboard_backend()``: it is where
     the hotkey listener is built, and macOS kills the process if that is anywhere else.
@@ -171,8 +174,8 @@ def launch(
     window = MainWindow(theme_manager, **window_kwargs)
 
     shell_kwargs: dict[str, object] = {}
-    if tray is not None:
-        shell_kwargs["tray"] = tray
+    if tray_factory is not None:
+        shell_kwargs["tray"] = tray_factory(window)
     if quit_app is not None:
         shell_kwargs["quit_app"] = quit_app
     shell = AppShell(window, **shell_kwargs)
