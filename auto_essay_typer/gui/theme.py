@@ -722,8 +722,10 @@ _STYLESHEET = Template(
         border: 2px solid $focus_ring;
     }
     /* The switch paints its own ring; this only hands it the colour, so the ring
-       follows a light/dark change when the stylesheet is re-applied. */
-    QCheckBox#ToggleSwitch {
+       follows a light/dark change when the stylesheet is re-applied. A type selector,
+       not the object name: a plain QCheckBox can carry the same name, and has no such
+       property to set. */
+    ToggleSwitch {
         qproperty-focusRingColor: $focus_ring;
     }
 

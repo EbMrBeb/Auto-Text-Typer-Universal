@@ -1,13 +1,14 @@
 """Suite-wide fixtures.
 
-The two here keep the shared pynput ``Controller`` (``driver.preload_keyboard_backend``)
-from ever being a real one in a test:
+These keep pynput from ever being real in a test:
 
-* ``_isolated_keyboard_backend`` (autouse) gives every test an empty cache and makes
-  building a real ``Controller`` impossible.
+* ``_isolated_keyboard_backend`` (autouse) gives every test an empty cache for the shared
+  ``Controller`` (``driver.preload_keyboard_backend``) and makes building a real one impossible.
 * ``fake_pynput`` swaps ``pynput.keyboard.Controller`` for a recording fake, for
   the tests that exercise the cache, the thread guard and the default-keyboard
   paths without typing anything or touching macOS.
+* ``_no_real_hotkey_listener`` (autouse) makes starting a real global hotkey listener
+  impossible, and fails the test that tries.
 """
 
 from __future__ import annotations
@@ -51,6 +52,36 @@ def _isolated_keyboard_backend(monkeypatch):
     monkeypatch.setattr(driver, "_shared_controller", None)
     if _pynput_keyboard is not None:
         monkeypatch.setattr(_pynput_keyboard, "Controller", _NoRealController)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_hotkey_listener(monkeypatch):
+    """Make it impossible for a test to start a real global hotkey listener, and fail it if one tries.
+
+    A real ``GlobalHotKeys`` captures every key the developer types, system-wide, and on macOS
+    (without the main-thread handling in ``gui/hotkeys.py``) kills the process outright. The app
+    starts one at launch, so any test that builds the window and starts the shell without
+    injecting a fake hotkey backend would install a real one. *Constructing* a listener is
+    harmless (a few tests do, to check it parses its hotkeys) -- it is ``start()`` that listens.
+
+    The attempt is recorded and the listener's ``start`` raises, which the hotkey service
+    treats as "hotkeys unavailable", so the test would otherwise carry on and pass quietly;
+    the assertion at teardown is what makes it fail.
+    """
+    attempts: list[str] = []
+    try:
+        from pynput._util import AbstractListener
+    except ImportError:  # pynput unusable here: nothing real can be started either
+        yield attempts
+        return
+
+    def refuse(self, *args, **kwargs):
+        attempts.append(type(self).__name__)
+        raise RuntimeError("tests may not start a real global hotkey listener")
+
+    monkeypatch.setattr(AbstractListener, "start", refuse)
+    yield attempts
+    assert attempts == [], f"a test started a real global hotkey listener: {attempts}; inject a fake backend"
 
 
 class FakeController:

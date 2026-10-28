@@ -50,6 +50,7 @@ from auto_essay_typer import platforms
 from auto_essay_typer.driver import Driver, Keyboard
 from auto_essay_typer.gui import icons
 from auto_essay_typer.gui.assets import asset_path
+from auto_essay_typer.gui.permission_dialog import prettify_dashes
 from auto_essay_typer.gui.run_controller import RunController
 from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import LIGHT_TOKENS, ThemeManager, Tokens
@@ -87,9 +88,9 @@ _DIALOG_WIDTH = 560
 _DIALOG_HEIGHT = 540
 
 _INTRO_TEXT = (
-    "Auto Text Typer types text into whatever app you click into, at a human pace, "
-    "fixing its own typos -- and can reproduce headings, bold, lists and more in "
-    "editors like Google Docs."
+    "Auto Text Typer types text into whatever app you click into, at a human pace and "
+    "fixing its own typos. In editors like Google Docs it can also reproduce headings, "
+    "bold, lists and more."
 )
 
 #: (icon name, lead, detail) for the welcome page's three points.
@@ -507,12 +508,14 @@ class OnboardingDialog(QDialog):
         buttons.setSpacing(8)
         self.open_settings_button = QPushButton("Open Settings")
         self.open_settings_button.setObjectName("SecondaryButton")
+        self.open_settings_button.setAccessibleName("Open the system settings")
         self.open_settings_button.setAutoDefault(False)
         self.open_settings_button.clicked.connect(self._on_open_settings_clicked)
         buttons.addWidget(self.open_settings_button)
 
         self.check_again_button = QPushButton("Check again")
         self.check_again_button.setObjectName("SecondaryButton")
+        self.check_again_button.setAccessibleName("Check the permission again")
         self.check_again_button.setAutoDefault(False)
         self.check_again_button.clicked.connect(self._refresh_permission)
         buttons.addWidget(self.check_again_button)
@@ -520,7 +523,7 @@ class OnboardingDialog(QDialog):
         layout.addLayout(buttons)
 
         self.open_settings_note_label = QLabel(
-            "Could not open the settings automatically -- follow the steps above instead."
+            "Could not open the settings automatically. Follow the steps above instead."
         )
         self.open_settings_note_label.setObjectName("MutedLabel")
         self.open_settings_note_label.setWordWrap(True)
@@ -550,7 +553,7 @@ class OnboardingDialog(QDialog):
         layout.addWidget(title)
 
         intro = QLabel(
-            "Press Try it here to watch it type into the box below -- including a slip it "
+            "Press Try it here to watch it type into the box below, including a slip it "
             "catches and fixes. Nothing outside this window is touched."
         )
         intro.setWordWrap(True)
@@ -580,6 +583,7 @@ class OnboardingDialog(QDialog):
         self.demo_progress.setValue(0)
         self.demo_progress.setTextVisible(False)
         self.demo_progress.setFixedSize(150, 8)
+        self.demo_progress.setAccessibleName("Practice typing progress")
         status_row.addWidget(self.demo_progress, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(status_row)
 
@@ -587,12 +591,14 @@ class OnboardingDialog(QDialog):
         buttons.setSpacing(8)
         self.try_button = QPushButton("Try it here")
         self.try_button.setObjectName("PrimaryButton")
+        self.try_button.setAccessibleName("Try it here")
         self.try_button.setAutoDefault(False)
         self.try_button.clicked.connect(self._on_try_clicked)
         buttons.addWidget(self.try_button)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("DestructiveButton")
+        self.stop_button.setAccessibleName("Stop the practice run")
         self.stop_button.setAutoDefault(False)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._on_stop_clicked)
@@ -621,6 +627,7 @@ class OnboardingDialog(QDialog):
         footer.setSpacing(8)
 
         self.skip_button = LinkButton("Skip setup", theme_manager=self._theme_manager)
+        self.skip_button.setAccessibleName("Skip setup")
         self.skip_button.setToolTip("Skip the rest of setup. You can run it again from Help.")
         self.skip_button.setAutoDefault(False)  # Enter always means "continue", never "skip"
         self.skip_button.clicked.connect(self._on_skip_clicked)
@@ -629,17 +636,20 @@ class OnboardingDialog(QDialog):
 
         self.back_button = QPushButton("Back")
         self.back_button.setObjectName("SecondaryButton")
+        self.back_button.setAccessibleName("Back to the previous step")
         self.back_button.setAutoDefault(False)
         self.back_button.clicked.connect(lambda _checked=False: self._go_to_step(self.step_index - 1))
         footer.addWidget(self.back_button)
 
         self.next_button = QPushButton("Next")
         self.next_button.setObjectName("PrimaryButton")
+        self.next_button.setAccessibleName("Next step")
         self.next_button.clicked.connect(lambda _checked=False: self._go_to_step(self.step_index + 1))
         footer.addWidget(self.next_button)
 
         self.finish_button = QPushButton("Finish")
         self.finish_button.setObjectName("SecondaryButton")
+        self.finish_button.setAccessibleName("Finish setup")
         self.finish_button.clicked.connect(self._on_finish_clicked)
         footer.addWidget(self.finish_button)
         return footer
@@ -720,8 +730,12 @@ class OnboardingDialog(QDialog):
             )
         self._permission_status = status
 
-        self.permission_banner.set_message(status.summary, "success" if status.granted else "warning")
-        self.permission_steps_label.setText(_ordered_list_html(status.fix_steps))
+        self.permission_banner.set_message(
+            prettify_dashes(status.summary), "success" if status.granted else "warning"
+        )
+        self.permission_steps_label.setText(
+            _ordered_list_html([prettify_dashes(step) for step in status.fix_steps])
+        )
         self.permission_steps_card.setVisible(bool(status.fix_steps) and not status.granted)
         self.open_settings_button.setVisible(status.can_open_settings)
         self.open_settings_note_label.setVisible(False)
@@ -792,9 +806,10 @@ class OnboardingDialog(QDialog):
             self._demo_completed = True
             self.demo_progress.setValue(100)
             self.demo_status_label.setText(
-                "Done -- that is exactly what it will do in your documents."
+                "Done. That is exactly what it will do in your documents."
             )
             self.try_button.setText("Try again")
+            self.try_button.setAccessibleName("Try again")
             _set_primary(self.try_button, False)
             _set_primary(self.finish_button, True)
         elif outcome == "stopped":

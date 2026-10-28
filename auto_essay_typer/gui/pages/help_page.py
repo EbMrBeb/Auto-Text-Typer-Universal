@@ -6,8 +6,8 @@ FAQ entries, ...) can be appended later without restructuring this page.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from auto_essay_typer.gui.controls import focus_ring_bleed
 from auto_essay_typer.platforms import OperatingSystem, current_os
@@ -39,9 +39,20 @@ _HOW_TO_USE = _ordered(
 _KEYBOARD = _ordered(
     "<b>Ctrl/Cmd+Return</b> starts typing from the Type page.",
     "<b>Esc</b> stops a run in progress, and closes any dialog.",
-    "<b>Ctrl/Cmd+1</b>, <b>2</b> and <b>3</b> switch between Type, Settings and Help.",
+    "<b>Ctrl/Cmd+1</b> to <b>4</b> switch between Type, Settings, Advanced and Help.",
     "<b>Tab</b> and <b>Shift+Tab</b> move between controls; <b>Space</b> presses a button "
     "or flips a switch, and the arrow keys move a slider.",
+)
+
+_ANYWHERE = _ordered(
+    "The tray icon (the menu bar on macOS) has <b>Start typing from clipboard</b>, "
+    "<b>Pause</b> or <b>Resume</b>, <b>Stop</b>, <b>Show window</b> and <b>Quit</b>, so a run can "
+    "be controlled while this window is out of the way. Not every Linux desktop has a tray.",
+    "The <b>global hotkeys</b> do the same from any app: one starts typing what is on the Type "
+    "page, one pauses and resumes, and <b>Esc</b> stops a run that is typing. Turn them on or off, "
+    "and change them, in Settings.",
+    "<b>Settings &gt; Confirm before typing from the tray or a hotkey</b> asks first, because the "
+    "text is not in front of you then.",
 )
 
 _PERMISSION_HELP = {
@@ -72,7 +83,16 @@ _OS_LABEL = {
 
 class HelpPage(QWidget):
     """Sections are appended top-to-bottom, above a trailing stretch that keeps
-    a short page from looking like it's centered oddly in a tall window."""
+    a short page from looking like it's centered oddly in a tall window.
+
+    Signals
+    -------
+    showSetupRequested()
+        The "Show setup again" button was pressed: the owner re-opens the first-run
+        walkthrough (the page itself knows nothing about it).
+    """
+
+    showSetupRequested = Signal()
 
     def __init__(self, version: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -103,13 +123,29 @@ class HelpPage(QWidget):
 
         self.add_section("How to use", _HOW_TO_USE)
         self.add_section("Keyboard", _KEYBOARD)
+        self.add_section("From the tray or a hotkey", _ANYWHERE)
         os_ = current_os()
         self.add_section(f"Permission on {_OS_LABEL[os_]}", _PERMISSION_HELP[os_])
+
+        self.show_setup_button = QPushButton("Show setup again")
+        self.show_setup_button.setObjectName("SecondaryButton")
+        self.show_setup_button.setAccessibleName("Show setup again")
+        self.show_setup_button.setToolTip("Walk through the welcome steps again.")
+        self.show_setup_button.clicked.connect(lambda _checked=False: self.showSetupRequested.emit())
+        self.add_section(
+            "Setup",
+            _paragraph(
+                "Run the welcome steps again: allowing typing into other apps, and a practice "
+                "run in a box that cannot touch your documents."
+            ),
+            button=self.show_setup_button,
+        )
         self.add_section("About", _paragraph(f"Auto Text Typer {version}<br>MIT License"))
 
-    def add_section(self, title: str, body_html: str) -> None:
+    def add_section(self, title: str, body_html: str, *, button: QPushButton | None = None) -> None:
         """Append a new section card, above the trailing stretch. ``body_html``
-        is rendered as rich text, so simple markup (``<b>``, ``<ol>``, ...) works."""
+        is rendered as rich text, so simple markup (``<b>``, ``<ol>``, ...) works.
+        ``button``, if given, sits left-aligned under the text."""
         card = QWidget()
         card.setObjectName("Card")
         card.setMaximumWidth(680)  # keeps prose lines a comfortable reading length
@@ -125,6 +161,9 @@ class HelpPage(QWidget):
         body_label.setWordWrap(True)
         body_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(body_label)
+
+        if button is not None:
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
 
         # The layout's last item is always the trailing stretch (added once,
         # in __init__) -- insert new sections just above it.

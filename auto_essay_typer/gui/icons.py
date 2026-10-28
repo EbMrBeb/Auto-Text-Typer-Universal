@@ -40,6 +40,8 @@ _ICONS: dict[str, tuple[str, bool]] = {
         '<line x1="3" y1="18" x2="21" y2="18"/><circle cx="10" cy="18" r="2"/>',
         False,
     ),
+    # Angle brackets with a slash: the Advanced page (profile fields, shortcut overrides).
+    "code": ('<path d="M8 7 L3 12 L8 17"/><path d="M16 7 L21 12 L16 17"/><path d="M14 4.5 L10 19.5"/>', False),
     "help": (
         '<circle cx="12" cy="12" r="9"/>'
         '<path d="M9.3 9.6a2.7 2.7 0 1 1 3.8 2.5c-.8.4-1.1.9-1.1 1.9"/>'
