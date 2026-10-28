@@ -1,19 +1,37 @@
-"""The Type page: paste text, tune quick settings, preview or start typing.
+"""The Type page: paste text or import a document, tune quick settings, preview or start typing.
 
-Layout: a text card (the editor + live counter/estimate line), a
-quick-settings card (profile, speed, mistakes, breaks), and an actions area
-that swaps between the idle Preview/Start buttons and a live run panel while
-a run is in flight (see :class:`RunController`).
+Layout: an import row (a link or file to import a formatted document from), a
+text card (the editor + live counter/estimate line), a quick-settings card
+(editor, profile, speed, mistakes, breaks), and an actions area that swaps
+between the idle Preview/Start buttons and a live run panel while a run is in
+flight (see :class:`RunController`).
+
+Two modes share the page. In **plain-text mode** (the default) the text box is
+an editor and what is typed is exactly what is in it. In **document mode**,
+entered by importing a document, the editor is replaced by a read-only view
+that draws the document's formatting, and what is typed is the document: its
+words *and* its headings, bold, alignment and lists, pressed into the chosen
+editor as keyboard shortcuts. The imported
+:class:`~auto_essay_typer.document.Document` is the source of truth in that
+mode (held in a :class:`~auto_essay_typer.gui.document_session.DocumentSession`);
+the widget only displays it and nothing is ever read back out of it.
+
+The "Typing into" picker chooses which editor's shortcuts are pressed. Its
+choice is saved in the shared :class:`~auto_essay_typer.gui.settings_store.SettingsStore`,
+and so are the per-editor shortcut overrides the Advanced page edits -- the page
+listens to the store, so changing either re-adapts a loaded document at once.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -28,25 +46,46 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from auto_essay_typer import config, platforms
+from auto_essay_typer import app_settings, config, platforms, targets
+from auto_essay_typer.actions import FormatOp
 from auto_essay_typer.gui.a11y import announce, spoken_duration
+from auto_essay_typer.gui.document_import import (
+    DocumentImporter,
+    DocumentLoader,
+    ImportOutcome,
+    default_choose_file,
+    default_show_error,
+    default_start_dir,
+    describe_source,
+)
+from auto_essay_typer.gui.document_panels import ImportBar, WarningsPanel
+from auto_essay_typer.gui.document_session import DocumentSession
+from auto_essay_typer.gui.document_view import DocumentView
+from auto_essay_typer.gui.document_warnings import editor_phrase
+from auto_essay_typer.gui.labels import ElidedLabel, WrappingLabel
 from auto_essay_typer.gui.permission_dialog import PermissionDialog
 from auto_essay_typer.gui.preview_dialog import PreviewDialog
 from auto_essay_typer.gui.quick_settings import (
     MISTAKE_STOPS,
     SPEED_MAX,
     SPEED_MIN,
+    initial_target_id,
     nearest_mistake_stop_index,
     speed_label,
+    target_caution,
 )
 from auto_essay_typer.gui.run_controller import RunController
+from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import ThemeManager
 from auto_essay_typer.gui.controls import ScrollPageLayout, ToggleSwitch, switch_row
-from auto_essay_typer.planner import plan
+from auto_essay_typer.importers import load_document
+from auto_essay_typer.keymaps import Chord
+from auto_essay_typer.planner import plan, plan_document
 from auto_essay_typer.platforms import PermissionStatus
 from auto_essay_typer.profiles import PRESETS, Profile
 from auto_essay_typer.progress import format_duration_words, format_mmss
 from auto_essay_typer.simulator import total_duration_ms
+from auto_essay_typer.targets import TargetApp
 
 _DROPPABLE_SUFFIXES = (".txt", ".md")
 #: Debounce delay before a background plan() recomputes the duration estimate.
@@ -165,9 +204,14 @@ def _card() -> QWidget:
 
 #: Width of the label column in the quick-settings rows, so the combo box and
 #: both sliders start at the same x.
-_ROW_LABEL_WIDTH = 72
+_ROW_LABEL_WIDTH = 84
 #: Width of the value readout beside a slider ("65 wpm · Natural").
 _VALUE_LABEL_WIDTH = 130
+#: Gap between a quick-settings row's label and its control.
+_ROW_SPACING = 12
+#: Shortest the document view is allowed to get: a formatted document needs more
+#: room than a text box to be recognisable, and the page scrolls to make it.
+_DOCUMENT_MIN_HEIGHT = 200
 
 
 def _row_label(text: str) -> QLabel:
@@ -177,6 +221,34 @@ def _row_label(text: str) -> QLabel:
 
 
 class TypePage(QWidget):
+    """The Type page. See the module docstring for the two modes it has.
+
+    Everything with a side effect can be injected, so the page can be driven from
+    tests without the network, a file dialog, a modal message box or the real
+    settings file: ``document_loader`` (default
+    :func:`~auto_essay_typer.importers.load_document`, called on a worker
+    thread with the cleaned-up link or path), ``file_chooser`` (the Browse
+    dialog), ``error_presenter`` (the message box shown when an import fails)
+    and ``settings_store``.
+
+    ``settings_store`` should be the one the rest of the app shares, so that the
+    editor chosen here and the shortcut overrides saved on the Advanced page are
+    the same everywhere. Without one the page keeps a private store of its own,
+    which reads and writes the same file but does not hear about changes another
+    store makes until the app is restarted.
+
+    Signals
+    -------
+    documentModeChanged(bool)
+        ``True`` on entering document mode, ``False`` on leaving it.
+    importFinished(bool)
+        An import ended and the page has been updated to show it: ``True`` if a
+        document was imported, ``False`` if it failed (the reason is on screen).
+    """
+
+    documentModeChanged = Signal(bool)
+    importFinished = Signal(bool)
+
     def __init__(
         self,
         run_controller: RunController,
@@ -185,6 +257,10 @@ class TypePage(QWidget):
         permission_checker: Callable[[], PermissionStatus] = platforms.check_input_permission,
         profiles_provider: Callable[[], dict[str, Profile]] = config.builtin_and_user_profiles,
         user_profile_names: Callable[[], set[str]] = lambda: set(config.load_profiles()),
+        settings_store: SettingsStore | None = None,
+        document_loader: DocumentLoader = load_document,
+        file_chooser: Callable[[QWidget | None, str], str | None] | None = None,
+        error_presenter: Callable[[QWidget | None, str, str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -193,6 +269,9 @@ class TypePage(QWidget):
         self._permission_checker = permission_checker
         self._profiles_provider = profiles_provider
         self._user_profile_names = user_profile_names
+        self._settings_store = settings_store if settings_store is not None else SettingsStore(parent=self)
+        self._choose_file = file_chooser if file_chooser is not None else default_choose_file
+        self._present_error = error_presenter if error_presenter is not None else default_show_error
 
         self._profiles: dict[str, Profile] = {}
         self._base_profile = Profile()
@@ -200,15 +279,27 @@ class TypePage(QWidget):
         self._words = 0
         self._duration_ms = 0.0
         self._estimate_generation = 0
-        self._estimate_signals = _EstimateSignals()
+        self._estimate_signals = _EstimateSignals(self)
         self._estimate_signals.ready.connect(self._on_estimate_ready)
         self._estimate_timer = QTimer(self)
         self._estimate_timer.setSingleShot(True)
         self._estimate_timer.setInterval(_ESTIMATE_DEBOUNCE_MS)
         self._estimate_timer.timeout.connect(self._start_estimate)
 
+        #: The imported document, fitted to the selected editor; ``None`` in plain-text mode.
+        self._session: DocumentSession | None = None
+        self._running = False
+        self._importing = False
+        self._last_import_dir = ""
+        self._targets: list[TargetApp] = targets.targets_for(platforms.current_os())
+        self._importer = DocumentImporter(document_loader, parent=self)
+        self._importer.busyChanged.connect(self._on_import_busy_changed)
+        self._importer.finished.connect(self._on_import_finished)
+
         self._build_ui()
         self._reload_profiles()
+        self._refresh_target_area()
+        self._settings_store.changed.connect(self._on_settings_changed)
 
         run_controller.stateChanged.connect(self._on_state_changed)
         run_controller.countdownTick.connect(self._on_countdown_tick)
@@ -249,18 +340,27 @@ class TypePage(QWidget):
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
+        self.import_bar = ImportBar()
+        self.import_bar.importRequested.connect(self._on_import_requested)
+        self.import_bar.browseRequested.connect(self._on_browse_requested)
+        root.addWidget(self.import_bar)
+
         # Stretch factor 1 on the text card only: it (and the QPlainTextEdit
         # inside it) is the one part of this page that should grow to fill a
         # taller window, so quick settings and the actions row always sit
         # snugly beneath it instead of floating with a gap either side.
         root.addWidget(self._build_text_card(), 1)
+        # Shown only in document mode, directly above the editor picker whose
+        # choice it explains.
+        self.warnings_panel = WarningsPanel()
+        self.warnings_panel.setVisible(False)
+        root.addWidget(self.warnings_panel)
         root.addWidget(self._build_quick_settings_card())
 
-        self.inline_message_label = QLabel("")
+        self.inline_message_label = WrappingLabel("")
         self.inline_message_label.setObjectName("InlineMessage")
         self.inline_message_label.setProperty("tone", "danger")
         self.inline_message_label.setVisible(False)
-        self.inline_message_label.setWordWrap(True)
         root.addWidget(self.inline_message_label)
 
         # Two sibling widgets with one hidden at a time, rather than a
@@ -284,6 +384,26 @@ class TypePage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        # Document mode's header: where the document came from, and the way back.
+        self.document_header = QWidget()
+        header_layout = QHBoxLayout(self.document_header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        self.document_source_label = ElidedLabel("")
+        self.document_source_label.setObjectName("MutedLabel")
+        header_layout.addWidget(self.document_source_label, 1)
+        self.back_button = QPushButton("Back to plain text")
+        self.back_button.setObjectName("SecondaryButton")
+        self.back_button.setAccessibleName("Back to plain text")
+        self.back_button.setToolTip(
+            "Stop using the imported document and edit its words as plain text. "
+            "Its formatting is dropped."
+        )
+        self.back_button.clicked.connect(self._on_back_to_plain_clicked)
+        header_layout.addWidget(self.back_button)
+        self.document_header.setVisible(False)
+        layout.addWidget(self.document_header)
+
         self.text_edit = _DropTextEdit()
         self.text_edit.setPlaceholderText(
             "Paste or type the text you want typed for you — an essay, an email, "
@@ -297,6 +417,12 @@ class TypePage(QWidget):
         self.text_edit.textChanged.connect(self._on_text_changed)
         self.text_edit.fileDropped.connect(self._on_file_dropped)
         layout.addWidget(self.text_edit)
+
+        # Takes the text box's place in document mode (never both at once).
+        self.document_view = DocumentView()
+        self.document_view.setMinimumHeight(_DOCUMENT_MIN_HEIGHT)
+        self.document_view.setVisible(False)
+        layout.addWidget(self.document_view)
 
         self.counter_label = QLabel("0 characters, 0 words")
         self.counter_label.setObjectName("MutedLabel")
@@ -314,6 +440,45 @@ class TypePage(QWidget):
         section_title = QLabel("Quick settings")
         section_title.setObjectName("SectionTitle")
         outer.addWidget(section_title)
+
+        # -- editor row: which application's shortcuts a document's formatting is pressed into --
+        editor_row = QHBoxLayout()
+        editor_row.setSpacing(_ROW_SPACING)
+        editor_label = _row_label("Typing into")
+        editor_row.addWidget(editor_label)
+        self.target_combo = QComboBox()
+        self.target_combo.setAccessibleName("Typing into")
+        self.target_combo.setToolTip(
+            "The application the text is typed into. For an imported document it decides "
+            "which keyboard shortcuts are pressed to format it."
+        )
+        editor_label.setBuddy(self.target_combo)
+        for target in self._targets:
+            self.target_combo.addItem(target.name, target.id)
+        self.target_combo.setCurrentIndex(
+            self.target_combo.findData(
+                initial_target_id(self._settings_store.settings.target_app, self._targets)
+            )
+        )
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        editor_row.addWidget(self.target_combo, 1)
+        editor_row.addSpacing(_VALUE_LABEL_WIDTH + editor_row.spacing())
+        outer.addLayout(editor_row)
+
+        # Under the combo, lined up with it: what to know about this editor.
+        details_row = QHBoxLayout()
+        details_row.setSpacing(_ROW_SPACING)
+        details_row.addSpacing(_ROW_LABEL_WIDTH + _ROW_SPACING)  # lines up with the combo
+        details = QVBoxLayout()
+        details.setSpacing(4)
+        self.target_notes_label = WrappingLabel("")
+        self.target_notes_label.setObjectName("MutedLabel")
+        details.addWidget(self.target_notes_label)
+        self.target_caution_label = WrappingLabel("")
+        self.target_caution_label.setObjectName("MutedLabel")
+        details.addWidget(self.target_caution_label)
+        details_row.addLayout(details, 1)
+        outer.addLayout(details_row)
 
         # -- profile row --
         profile_row = QHBoxLayout()
@@ -553,17 +718,25 @@ class TypePage(QWidget):
 
     def _on_text_changed(self) -> None:
         self._hide_inline_message()
-        text = self.text_edit.toPlainText()
+        self._recount()
+        self._schedule_estimate()
+
+    def _recount(self) -> None:
+        """Refresh the character and word counts from whatever is going to be typed."""
+        text = self._session.typed_text() if self._session is not None else self.text_edit.toPlainText()
         self._chars = len(text)
         self._words = len(text.split()) if text.strip() else 0
         self._render_counter()
-        self._schedule_estimate()
 
     def _on_file_dropped(self, content: str) -> None:
         self.text_edit.setPlainText(platforms.normalize_input_text(content))
 
     def set_text(self, text: str) -> None:
-        """Programmatically load text (used by tests and, later, importers)."""
+        """Programmatically load plain text (used by tests and, later, importers).
+
+        Loading text means plain-text mode: if a document was imported, it is let go.
+        """
+        self._leave_document_mode()
         self.text_edit.setPlainText(platforms.normalize_input_text(text))
 
     # -- live estimate (debounced, computed off the GUI thread) -------------------
@@ -574,18 +747,41 @@ class TypePage(QWidget):
     def _start_estimate(self) -> None:
         self._estimate_generation += 1
         generation = self._estimate_generation
-        text = self.normalized_text()
-        if not text.strip():
-            self._on_estimate_ready(generation, 0.0)
-            return
-        profile = self.effective_profile()
+        session = self._session
+        if session is not None:
+            if not session.has_text():
+                self._on_estimate_ready(generation, 0.0)
+                return
+            document = session.adapted
+            profile = self.effective_profile()
+
+            def make_actions():
+                return plan_document(document, profile, seed=0)
+
+        else:
+            text = self.normalized_text()
+            if not text.strip():
+                self._on_estimate_ready(generation, 0.0)
+                return
+            profile = self.effective_profile()
+
+            def make_actions():
+                return plan(text, profile, seed=0)
+
+        # The worker holds the signal carrier and plain data, never the page: if it held
+        # the page and were the last to let go of it, the page's widgets would be
+        # destroyed on this thread, which Qt forbids (and which corrupts its widget list).
+        signals = self._estimate_signals
 
         def work() -> None:
             try:
-                duration_ms = total_duration_ms(plan(text, profile, seed=0))
+                duration_ms = total_duration_ms(make_actions())
             except Exception:  # noqa: BLE001 - the estimate is best-effort
                 duration_ms = 0.0
-            self._estimate_signals.ready.emit(generation, duration_ms)
+            try:
+                signals.ready.emit(generation, duration_ms)
+            except RuntimeError:
+                pass  # the page was closed while this was computing: nobody wants the answer
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -603,6 +799,241 @@ class TypePage(QWidget):
             estimate = format_duration_words(self._duration_ms / 1000.0)
             self.counter_label.setText(f"{chars_words}   ·   est. {estimate}")
 
+    # -- importing a document -------------------------------------------------------
+
+    def _on_import_requested(self, source: str) -> None:
+        if self._importing or self._running or self._run_controller.is_busy:
+            return
+        self._importer.start(source)
+
+    def _on_browse_requested(self) -> None:
+        if self._importing or self._running or self._run_controller.is_busy:
+            return
+        chosen = self._choose_file(self, self._last_import_dir or default_start_dir())
+        if not chosen:
+            return
+        self._last_import_dir = str(Path(chosen).parent)
+        self.import_bar.set_source(chosen)
+        self.import_bar.request_import()
+
+    def _on_import_busy_changed(self, busy: bool) -> None:
+        self._importing = busy
+        self.import_bar.set_busy(busy)
+        self._refresh_enabled()
+
+    def _on_import_finished(self, outcome: ImportOutcome) -> None:
+        if not outcome.ok:
+            self._import_failed(outcome.error or "The document could not be imported.")
+            return
+        document = outcome.document
+        if document is None or not document.plain_text().strip():
+            self._import_failed("That document has no text to type.")
+            return
+        self._enter_document_mode(outcome)
+        self.importFinished.emit(True)
+
+    def _import_failed(self, message: str) -> None:
+        """Say why an import failed, inline and in a message box; nothing else changes.
+
+        A document already imported stays exactly as it was, and a page in
+        plain-text mode stays there.
+        """
+        self.import_bar.show_error(message)
+        self.import_bar.edit.setFocus()
+        self._present_error(self, "Couldn't import the document", message)
+        self.importFinished.emit(False)
+
+    # -- document mode ----------------------------------------------------------------
+
+    @property
+    def in_document_mode(self) -> bool:
+        """Whether an imported document, not the text box, is what will be typed."""
+        return self._session is not None
+
+    def document_session(self) -> DocumentSession | None:
+        """The imported document fitted to the selected editor, or ``None`` in plain-text mode."""
+        return self._session
+
+    def warning_lines(self) -> tuple[str, ...]:
+        """What the "What will not be reproduced" panel lists, one entry per line."""
+        return self.warnings_panel.lines()
+
+    def _enter_document_mode(self, outcome: ImportOutcome) -> None:
+        target = self._selected_target()
+        keymap = self._keymap_for(target)
+        report = outcome.report
+        self._session = DocumentSession.create(
+            outcome.document,
+            outcome.source,
+            report.warnings if report is not None else (),
+            target,
+            keymap,
+        )
+        self._hide_inline_message()
+        self.import_bar.clear_error()
+        self._show_session()
+        self.document_view.setFocus()
+        announce(
+            self.document_view,
+            f"Imported {describe_source(outcome.source)}. {self._warnings_summary(self._session)}",
+            False,
+        )
+        self.documentModeChanged.emit(True)
+
+    def _leave_document_mode(self, restore_text: str | None = None) -> None:
+        """Return to plain-text mode (a no-op if already there).
+
+        ``restore_text`` becomes the text box's contents, as an edit that can be
+        undone, so going back never throws away what was in the box before the
+        import without a way to get it back.
+        """
+        if self._session is None:
+            return
+        self._session = None
+        self.document_view.set_document(None)
+        self._apply_mode_ui()
+        if restore_text is not None:
+            self._replace_plain_text(restore_text)
+        self._recount()
+        self._schedule_estimate()
+        self.documentModeChanged.emit(False)
+
+    def _on_back_to_plain_clicked(self) -> None:
+        session = self._session
+        if session is None or self._importing or self._running:
+            return
+        self._leave_document_mode(platforms.normalize_input_text(session.document.plain_text()))
+        self._hide_inline_message()
+        self.text_edit.setFocus()
+
+    def _replace_plain_text(self, text: str) -> None:
+        """Make ``text`` the text box's contents as one undoable edit."""
+        cursor = self.text_edit.textCursor()
+        cursor.beginEditBlock()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        self.text_edit.setTextCursor(cursor)
+
+    def _apply_mode_ui(self) -> None:
+        """Show the widgets for the current mode and hide the other mode's."""
+        in_document = self._session is not None
+        self.text_edit.setVisible(not in_document)
+        self.document_view.setVisible(in_document)
+        self.document_header.setVisible(in_document)
+        self.warnings_panel.setVisible(in_document)
+
+    def _show_session(self) -> None:
+        """Draw the current session: the document, where it came from, what is lost, the counts."""
+        session = self._session
+        if session is None:
+            return
+        self.document_view.set_document(session.adapted)
+        self.document_source_label.setFullText(f"Imported from {describe_source(session.source)}")
+        self.warnings_panel.show_lines(session.plain_warnings, editor_phrase(session.target))
+        self._apply_mode_ui()
+        self._recount()
+        self._schedule_estimate()
+
+    @staticmethod
+    def _warnings_summary(session: DocumentSession) -> str:
+        count = len(session.plain_warnings)
+        editor = editor_phrase(session.target)
+        if count == 0:
+            return f"Everything in it can be reproduced in {editor}."
+        return f"{count} thing{'s' if count != 1 else ''} will not be reproduced in {editor}."
+
+    # -- the "Typing into" editor picker ---------------------------------------------------
+
+    def selected_target_id(self) -> str:
+        """The id of the editor chosen in the "Typing into" picker."""
+        return str(self.target_combo.currentData())
+
+    def _selected_target(self) -> TargetApp:
+        return targets.get_target(self.selected_target_id())
+
+    def _select_target(self, target_id: str) -> None:
+        """Move the picker to ``target_id`` without treating it as a choice the user made."""
+        self.target_combo.blockSignals(True)
+        self.target_combo.setCurrentIndex(self.target_combo.findData(target_id))
+        self.target_combo.blockSignals(False)
+
+    def _keymap_for(self, target: TargetApp) -> Mapping[FormatOp, Chord]:
+        """The shortcuts pressed for ``target``: its built-in keymap with the user's overrides on top.
+
+        The overrides are the ones saved from the Advanced page
+        (``app_settings.effective_keymap``). The settings store refuses to save
+        any that cannot be read, so this does not fail for saved settings.
+        """
+        settings = dataclasses.replace(self._settings_store.settings, target_app=target.id)
+        return app_settings.effective_keymap(settings, platforms.current_os())
+
+    def _on_target_changed(self, _index: int) -> None:
+        target = self._selected_target()
+        saved = self._settings_store.settings.target_app
+        if target.id != saved:
+            try:
+                self._settings_store.update(target_app=target.id)
+            except ValueError as exc:
+                # The store refuses a choice that could not be loaded back (for example
+                # an editor whose shortcuts collide with a global hotkey): go back to
+                # the editor that is saved rather than use one that will not be remembered.
+                self._select_target(initial_target_id(saved, self._targets))
+                self._refresh_target_area()
+                self._show_inline_message(f"Couldn't switch to {target.name}: {exc}")
+                return
+            except OSError as exc:
+                self._show_inline_message(
+                    f"Now typing into {target.name}, but that choice couldn't be saved: {exc}"
+                )
+        self._refresh_target_area()
+
+    def _on_settings_changed(self, _settings: object) -> None:
+        """The saved settings changed elsewhere: follow the editor and shortcut overrides."""
+        wanted = initial_target_id(self._settings_store.settings.target_app, self._targets)
+        if wanted != self.selected_target_id():
+            self._select_target(wanted)
+        self._refresh_target_area()
+
+    def _refresh_target_area(self) -> None:
+        """Show the selected editor's notes, and fit a loaded document to its shortcuts."""
+        target = self._selected_target()
+        self.target_notes_label.setText(target.notes)
+        caution = target_caution(target)
+        self.target_caution_label.setText(caution)
+        self.target_caution_label.setVisible(bool(caution))
+        self._reapply_session(target, self._keymap_for(target))
+
+    def _reapply_session(self, target: TargetApp, keymap: Mapping[FormatOp, Chord]) -> None:
+        """Adapt the loaded document, from its source, to ``target``'s ``keymap`` (if that changed)."""
+        session = self._session
+        if session is None:
+            return
+        if session.target.id == target.id and dict(session.keymap) == dict(keymap):
+            return
+        self._session = session.for_target(target, keymap)
+        self._show_session()
+        announce(
+            self.warnings_panel,
+            f"Typing into {editor_phrase(target)}. {self._warnings_summary(self._session)}",
+            False,
+        )
+
+    # -- enabling and disabling ------------------------------------------------------------
+
+    def _refresh_enabled(self) -> None:
+        """Enable the import controls and the actions only when nothing else is going on.
+
+        While a document is being read, importing again, switching mode and
+        starting are all off; while a run is typing, so is everything that
+        would change what it is typing.
+        """
+        idle = not self._running and not self._importing
+        self.import_bar.set_controls_enabled(idle)
+        self.back_button.setEnabled(idle)
+        self.preview_button.setEnabled(not self._importing)
+        self.start_button.setEnabled(not self._importing)
+
     # -- inline validation message --------------------------------------------------
 
     def _show_inline_message(self, message: str) -> None:
@@ -618,6 +1049,12 @@ class TypePage(QWidget):
     # -- preview --------------------------------------------------------------------
 
     def _on_preview_clicked(self) -> None:
+        if self._importing:
+            return
+        session = self._session
+        if session is not None:
+            self._preview_document(session)
+            return
         text = self.normalized_text()
         if not text.strip():
             self._show_inline_message("Type or paste some text first.")
@@ -626,15 +1063,36 @@ class TypePage(QWidget):
         dialog = PreviewDialog(actions, text, self._theme_manager.tokens, parent=self)
         dialog.exec()
 
+    def _preview_document(self, session: DocumentSession) -> None:
+        """Preview the imported document: its plan, verified against the document itself."""
+        if not session.has_text():
+            self._show_inline_message("That document has no text to type.")
+            return
+        actions = plan_document(session.adapted, self.effective_profile(), seed=0)
+        dialog = PreviewDialog(
+            actions,
+            session.typed_text(),
+            self._theme_manager.tokens,
+            parent=self,
+            document=session.adapted,
+        )
+        dialog.exec()
+
     # -- start / preflight ----------------------------------------------------------
 
     def _on_start_clicked(self) -> None:
-        if self._run_controller.is_busy:
+        if self._run_controller.is_busy or self._importing:
             return
-        text = self.normalized_text()
-        if not text.strip():
-            self._show_inline_message("Type or paste some text first.")
-            return
+        session = self._session
+        if session is not None:
+            if not session.has_text():
+                self._show_inline_message("That document has no text to type.")
+                return
+        else:
+            text = self.normalized_text()
+            if not text.strip():
+                self._show_inline_message("Type or paste some text first.")
+                return
 
         status = self._permission_checker()
         if not status.granted:
@@ -650,20 +1108,28 @@ class TypePage(QWidget):
 
         self._hide_inline_message()
         self._set_running_ui(True)
-        self._run_controller.start(text, self.effective_profile(), seed=None)
+        if session is not None:
+            self._run_controller.start_document(
+                session.adapted, self.effective_profile(), session.keymap, seed=None
+            )
+        else:
+            self._run_controller.start(text, self.effective_profile(), seed=None)
 
     # -- run panel: react to RunController signals -----------------------------------
 
     def _set_running_ui(self, running: bool) -> None:
+        self._running = running
         # The card as a whole, so its labels dim along with the controls.
         self._quick_settings_card.setEnabled(not running)
         self.text_edit.setEnabled(not running)
+        self.document_view.setEnabled(not running)
         self.profile_combo.setEnabled(not running)
         self.speed_slider.setEnabled(not running)
         self.mistake_slider.setEnabled(not running)
         self.breaks_switch.setEnabled(not running)
         self.idle_actions_widget.setVisible(not running)
         self.run_panel_widget.setVisible(running)
+        self._refresh_enabled()
         if running:
             self.run_progress_bar.setRange(0, 0)
             self.run_progress_bar.setValue(0)

@@ -11,6 +11,7 @@ and a couple of small builders shared across test modules.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import pytest
@@ -60,3 +61,72 @@ def recording_driver_factory():
 
     factory.keymaps = []
     return factory, keyboards
+
+
+# -- a Type page wired to fakes ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class PageRig:
+    """A :class:`TypePage` with every side effect replaced by something a test can inspect.
+
+    ``keyboards`` and ``factory`` come from ``recording_driver_factory`` (what was
+    "typed", and which keymap each run's driver was built with); ``errors`` collects
+    the ``(title, message)`` of every import-failure message box that would have been
+    shown; ``chosen`` records the start folder of every Browse dialog and ``store`` is
+    the settings store the page reads and saves its editor choice in.
+    """
+
+    page: object
+    controller: object
+    keyboards: list
+    factory: object
+    errors: list
+    chosen: list
+    store: object
+
+
+@pytest.fixture
+def type_page_rig(qtbot, qapp, recording_driver_factory, tmp_path):
+    """``build(...)`` -> :class:`PageRig`: a Type page that never touches the network, a
+    file dialog, a modal message box, the real keyboard or the real settings file."""
+    from auto_essay_typer.gui.pages.type_page import TypePage
+    from auto_essay_typer.gui.run_controller import RunController
+    from auto_essay_typer.gui.settings_store import SettingsStore
+    from auto_essay_typer.gui.theme import ThemeManager
+    from auto_essay_typer.importers import load_document
+    from auto_essay_typer.platforms import PermissionStatus
+
+    granted = PermissionStatus(granted=True, summary="ok", fix_steps=(), can_open_settings=False)
+
+    def build(
+        *,
+        loader=load_document,
+        file_to_choose=None,
+        driver_factory=None,
+        permission_checker=lambda: granted,
+        store=None,
+    ) -> PageRig:
+        factory, keyboards = recording_driver_factory
+        controller = RunController(driver_factory=driver_factory or factory)
+        errors: list[tuple[str, str]] = []
+        chosen: list[str] = []
+
+        def choose_file(parent, start_dir):
+            chosen.append(start_dir)
+            return file_to_choose
+
+        settings_store = store if store is not None else SettingsStore(tmp_path / "settings.json")
+        page = TypePage(
+            controller,
+            ThemeManager(qapp),
+            permission_checker=permission_checker,
+            settings_store=settings_store,
+            document_loader=loader,
+            file_chooser=choose_file,
+            error_presenter=lambda parent, title, message: errors.append((title, message)),
+        )
+        qtbot.addWidget(page)
+        return PageRig(page, controller, keyboards, factory, errors, chosen, settings_store)
+
+    return build
