@@ -251,4 +251,8 @@ def default_show_error(parent: QWidget | None, title: str, message: str) -> None
     box = QMessageBox(QMessageBox.Icon.Warning, title, message, QMessageBox.StandardButton.Ok, parent)
     box.setTextFormat(Qt.TextFormat.PlainText)
     box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    box.exec()
+    try:
+        box.exec()
+    finally:
+        # Its parent would otherwise keep every box it ever showed, hidden, until it closes.
+        box.deleteLater()

@@ -6,7 +6,8 @@ import threading
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from auto_essay_typer.document import Document, ImportReport, Paragraph, ParagraphStyle, Run, TextStyle
 from auto_essay_typer.gui import document_import
@@ -128,6 +129,28 @@ def test_the_dialog_opens_in_documents_or_failing_that_the_home_folder(monkeypat
         document_import.QStandardPaths, "writableLocation", staticmethod(lambda _location: "")
     )
     assert document_import.default_start_dir() == str(Path.home())
+
+
+# --- the error box ------------------------------------------------------------------------------------------------
+
+
+def test_the_error_box_shows_the_message_as_written_and_is_not_left_behind(qtbot, monkeypatch):
+    shown = {}
+
+    def fake_exec(box):
+        shown.update(text=box.text(), format=box.textFormat())
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    message = "Could not read <b>that</b> link: https://example.com/?a=1&b=2"
+
+    document_import.default_show_error(parent, "Couldn't import the document", message)
+
+    assert shown == {"text": message, "format": Qt.TextFormat.PlainText}
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert parent.findChildren(QMessageBox) == [], "the page does not keep a hidden box for every failure"
 
 
 # --- the importer --------------------------------------------------------------------------------------------------
