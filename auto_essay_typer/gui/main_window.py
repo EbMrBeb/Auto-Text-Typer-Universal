@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
         if warning:
             self.show_notice(
                 "Your saved settings could not be read, so the defaults are in use. "
-                f"({warning}) They are replaced the next time you change a setting.",
+                f"Details: {warning}. The file is replaced the next time you change a setting.",
                 action=("Open Settings", lambda: self.show_page("settings")),
             )
 

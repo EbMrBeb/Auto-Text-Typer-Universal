@@ -21,7 +21,6 @@ the page can be driven from tests without blocking on a dialog or starting a lis
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import Qt
@@ -575,7 +574,7 @@ class SettingsPage(QWidget, ThemedMixin):
             return
         state, detail = service.state, service.detail
         if state == STATE_UNAVAILABLE:
-            text = f"Global hotkeys are not working: {detail}" if detail else "Global hotkeys are not working."
+            text = f"Not working: {detail}" if detail else "Not working: they could not start."
             tone = "danger"
         elif state == STATE_ACTIVE:
             text = "Global hotkeys are on." + (f" {detail}." if detail else "")
@@ -631,17 +630,4 @@ class SettingsPage(QWidget, ThemedMixin):
             QLabel#HotkeyStatus {{ font-size: 12px; color: {t.muted_text}; }}
             QLabel#HotkeyStatus[tone="danger"] {{ color: {t.danger_text}; font-weight: 600; }}
             """
-        )
-
-    def settings_snapshot(self) -> AppSettings:
-        """The settings the controls show right now, for tests and callers that want to compare."""
-        return dataclasses.replace(
-            self._store.settings,
-            target_app=str(self.target_combo.currentData()),
-            countdown_seconds=self.countdown_spin.value(),
-            confirm_before_typing=self.confirm_switch.isChecked(),
-            minimize_on_start=self.minimize_switch.isChecked(),
-            theme=ThemeMode(self.theme_combo.currentData()).value,
-            show_mini_window=self.mini_window_checkbox.isChecked(),
-            global_hotkeys_enabled=self.hotkeys_switch.isChecked(),
         )
