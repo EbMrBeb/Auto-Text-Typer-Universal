@@ -746,6 +746,16 @@ class TypePage(QWidget):
     # -- text input ---------------------------------------------------------------
 
     def normalized_text(self) -> str:
+        """The text that Start would type right now.
+
+        In plain-text mode that is the text box's contents. In document mode it is the
+        imported document's words as they will appear on screen: the text box is not what
+        gets typed then and may hold something older or nothing at all. Callers outside
+        the page, which can only ask it what is about to be typed (to see that there is
+        something to type, or to count it), get the right answer in either mode.
+        """
+        if self._session is not None:
+            return platforms.normalize_input_text(self._session.typed_text())
         return platforms.normalize_input_text(self.text_edit.toPlainText())
 
     def _on_text_changed(self) -> None:

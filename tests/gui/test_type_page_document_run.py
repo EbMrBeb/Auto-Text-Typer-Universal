@@ -475,3 +475,36 @@ def test_the_estimate_poll_stops_when_nothing_is_being_computed(qtbot, type_page
     qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
     qtbot.waitUntil(lambda: not page._estimate_poll.isActive(), timeout=3000)
     assert page._estimates_in_flight == 0
+
+
+# --- what the rest of the app is told is about to be typed -----------------------------------------------------------
+
+
+def test_asked_what_will_be_typed_the_page_answers_for_the_mode_it_is_in(qtbot, type_page_rig):
+    """Code outside the page asks it for its text, to see there is something to type and to count it.
+
+    In document mode the text box is not what gets typed, and may hold something older or
+    nothing at all, so the answer has to be the document's words.
+    """
+    page = type_page_rig().page
+    page.set_text("words left in the plain text box")
+    assert page.normalized_text() == "words left in the plain text box"
+
+    _import(qtbot, page)
+    assert page.normalized_text() == page.document_session().adapted.plain_text()
+    assert "plain text box" not in page.normalized_text()
+
+    page.back_button.click()
+    assert page.normalized_text() == page.text_edit.toPlainText()
+    assert page.normalized_text().strip(), "going back leaves the document's words in the box"
+
+
+def test_a_loaded_document_is_not_an_empty_page_when_the_text_box_is_empty(qtbot, type_page_rig):
+    page = type_page_rig().page
+    assert page.text_edit.toPlainText() == ""
+    assert not page.normalized_text().strip()
+
+    _import(qtbot, page)
+
+    assert page.text_edit.toPlainText() == ""
+    assert page.normalized_text().strip(), "the document is what would be typed, whatever the box holds"
