@@ -438,3 +438,87 @@ def test_a_paragraph_with_typed_markers_shows_them_as_ordinary_text(qtbot):
     view = _view(qtbot, document)
     assert view.toPlainText() == "• item"
     assert _blocks(view)[0].textList() is None
+
+
+# --- sizes, odd characters, empty items, font changes ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 24])
+def test_every_display_style_is_strictly_larger_than_the_next_one_down_at_any_body_size(body):
+    from auto_essay_typer.gui.document_view import _SIZE_RANK, display_sizes
+
+    sizes = display_sizes(body)
+    ranked = [sizes[style] for style in _SIZE_RANK]
+    assert ranked == sorted(set(ranked), reverse=True), f"collision at body size {body}: {ranked}"
+    assert min(ranked) > body
+
+
+def test_google_docs_ordering_is_kept_with_a_subtitle_between_heading_2_and_heading_3():
+    from auto_essay_typer.gui.document_view import display_sizes
+
+    sizes = display_sizes(13)
+    assert sizes[ParagraphStyle.HEADING_2] > sizes[ParagraphStyle.SUBTITLE] > sizes[ParagraphStyle.HEADING_3]
+
+
+def test_all_eight_display_styles_are_drawn_in_distinct_decreasing_sizes(qtbot):
+    from auto_essay_typer.gui.document_view import _SIZE_RANK
+
+    view = _view(qtbot, Document(tuple(_para(style.value, style=style) for style in _SIZE_RANK) + (_para("body"),)))
+    sizes = [_pixel_size(view, block) for block in _blocks(view)]
+    assert sizes == sorted(set(sizes), reverse=True)
+    assert len(sizes) == 9
+
+
+def test_characters_a_text_layout_would_act_on_do_not_split_a_paragraph_or_its_list_item(qtbot):
+    document = Document(
+        (
+            Paragraph((Run("carriage\rreturn"),), list_kind=ListKind.BULLET),
+            Paragraph((Run("line separator and paragraph separator"),), list_kind=ListKind.BULLET),
+            _para("plain"),
+        )
+    )
+    view = _view(qtbot, document)
+    assert view.document().blockCount() == 3
+    first, second, third = _blocks(view)
+    assert first.textList() is not None and second.textList() is not None
+    assert third.textList() is None
+    # The view cannot be the source of what is typed; the document still holds the real text.
+    assert view.shown_document.paragraphs[0].text == "carriage\rreturn"
+
+
+def test_qts_own_placeholder_characters_are_replaced_for_the_drawing(qtbot):
+    view = _view(qtbot, Document((_para("a﷐b﷑c"),)))
+    assert view.toPlainText() == "a�b�c"
+
+
+def test_a_list_item_with_no_text_draws_no_marker_because_no_real_document_has_one(qtbot):
+    document = Document((_para("one", list_kind=ListKind.BULLET), Paragraph(list_kind=ListKind.BULLET), _para("two")))
+    view = _view(qtbot, document)
+    assert [block.textList() is not None for block in _blocks(view)] == [True, False, False]
+    assert view.shown_document is document, "the view still holds what it was given"
+
+
+def test_the_indent_leaves_room_for_a_three_digit_number_marker(qtbot):
+    view = _view(qtbot, Document((_para("x", list_kind=ListKind.NUMBERED),)))
+    assert view.fontMetrics().horizontalAdvance("100.") < view.document().indentWidth()
+
+
+def test_a_change_of_font_redraws_with_the_new_sizes_and_keeps_the_readers_place(qtbot):
+    document = Document(
+        (_para("Heading", style=ParagraphStyle.HEADING_1),) + tuple(_para(f"line {n}") for n in range(300))
+    )
+    view = _view(qtbot, document)
+    view.resize(300, 120)
+    view.show()
+    qtbot.waitExposed(view)
+    before = _pixel_size(view, _blocks(view)[0])
+    view.verticalScrollBar().setValue(400)
+    place = view.verticalScrollBar().value()
+    assert place > 0
+
+    bigger = view.font()
+    bigger.setPixelSize(QFontInfo(view.font()).pixelSize() + 8)
+    view.setFont(bigger)
+
+    assert _pixel_size(view, _blocks(view)[0]) > before
+    assert view.verticalScrollBar().value() > 0
