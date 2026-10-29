@@ -51,6 +51,7 @@ from __future__ import annotations
 import atexit
 import functools
 import logging
+import re
 import threading
 import time
 import weakref
@@ -151,14 +152,24 @@ def _macos_global_hotkeys_class() -> type:
     kills the process with ``SIGTRAP`` (see the module docstring). The value it
     yields is a plain ``(keyboard type, layout bytes)`` tuple, so it can just as
     well be read once, on the main thread, and handed to the listener thread --
-    which is all this subclass does: the constructor (main thread) reads it, and
+    which is what this subclass does: the constructor (main thread) reads it, and
     ``_run`` (listener thread) installs it and goes straight to the event tap
     without asking the OS again.
 
+    The same layout is used for a second job, which has nothing to do with threads
+    but decides whether the default hotkeys work at all. pynput names a pressed
+    letter by the *character the key event carries*, and Option changes that
+    character: with the default ``<cmd>+<alt>+<shift>+t`` held, the event says
+    ``'ˇ'``, not ``'t'``, so the chord could never complete. :meth:`canonical` asks the
+    layout which character the key makes with no modifiers held instead, so a chord
+    means the same keys whatever is held with them. (Translating a key code with the
+    layout bytes read here is plain arithmetic on those bytes; unlike reading the
+    layout it is safe on the listener thread.)
+
     Built lazily because ``pynput._util.darwin`` imports the macOS frameworks.
     """
-    from pynput._util.darwin import ListenerMixin, keycode_context
-    from pynput.keyboard import GlobalHotKeys
+    from pynput._util.darwin import ListenerMixin, keycode_context, keycode_to_string
+    from pynput.keyboard import GlobalHotKeys, KeyCode
 
     class MacOSGlobalHotKeys(GlobalHotKeys):
         def __init__(self, hotkeys: Mapping[str, Callable[[], None]], *args: Any, **kwargs: Any) -> None:
@@ -173,6 +184,34 @@ def _macos_global_hotkeys_class() -> type:
                 ListenerMixin._run(self)  # what the stock _run wraps in keycode_context()
             finally:
                 self._context = None
+
+        def canonical(self, key: Any) -> Any:
+            """A pressed letter, digit or symbol as the key it is on the keyboard, whatever modifiers are held.
+
+            Called on the listener thread for every key press and release in every app, so it
+            never raises (an exception there would end the listener for good): on any trouble
+            it falls back to pynput's own normalisation.
+            """
+            vk = getattr(key, "vk", None)
+            if isinstance(key, KeyCode) and vk is not None:
+                try:
+                    plain = self._unmodified_character(vk)
+                except Exception:  # noqa: BLE001 - see the docstring
+                    logger.debug("Could not translate key code %r through the layout", vk, exc_info=True)
+                    plain = ""
+                if plain:
+                    return KeyCode.from_char(plain)
+            return super().canonical(key)
+
+        def _unmodified_character(self, vk: int) -> str:
+            """The one printable character key code ``vk`` makes with no modifier held, or ``""``."""
+            _keyboard_type, layout = self._main_thread_context
+            if not layout:  # no layout data (nothing to translate with): leave the key as pynput names it
+                return ""
+            text = keycode_to_string(self._main_thread_context, vk)
+            if len(text) == 1 and text.isprintable() and not text.isspace():
+                return text.lower()
+            return ""  # a dead key, a space, or nothing: not a character a hotkey can name
 
     return MacOSGlobalHotKeys
 
@@ -266,6 +305,10 @@ class PynputHotkeyBackend:
         if prepared is not None and prepared[0] == dict(bindings):
             listener = prepared[1]
         else:
+            if self._os_provider() is OperatingSystem.MACOS and threading.current_thread() is not threading.main_thread():
+                # Building the listener here would read the keyboard layout off the main thread, and
+                # macOS answers that by killing the process. Refuse instead of taking the app down.
+                raise HotkeyError(f"{_GENERIC_DETAIL} (the listener was not built on the main thread)")
             listener = self._create_listener(bindings)
         try:
             # pynput's listeners already are daemon threads; insist on it so a
@@ -314,7 +357,12 @@ class PynputHotkeyBackend:
                 raise HotkeyError("The pynput keyboard library is not installed") from exc
             raise HotkeyError(_IMPORT_DETAIL) from exc
         except Exception as exc:  # noqa: BLE001 - ImportError, Xlib's DisplayNameError at import, ...
-            logger.debug("Could not create the hotkey listener", exc_info=True)
+            logger.warning("Could not create the hotkey listener", exc_info=True)
+            if self._os_provider() is OperatingSystem.MACOS:
+                # Permission problems show up when the event tap is created, after the listener has
+                # been built. A listener that cannot even be built is something else, and saying
+                # "needs Accessibility access" would send the user off to fix the wrong thing.
+                raise HotkeyError(f"{_GENERIC_DETAIL} ({type(exc).__name__}: {exc})") from exc
             raise HotkeyError(self._unavailable_detail()) from exc
 
     def _await_listening(self, listener: Any) -> None:
@@ -394,21 +442,113 @@ def _stop_backend(backend: HotkeyBackend) -> None:
         logger.warning("Stopping the global hotkey backend failed", exc_info=True)
 
 
+#: Spellings of a modifier that name one particular key: ``<ctrl_r>``, ``<alt_gr>``. A listener reports
+#: either Ctrl key as plain ``<ctrl>``, so a hotkey written with the side-specific name never matches
+#: (or, on some platforms, is just another spelling of ``<ctrl>``). Either way the plain name is right.
+_SIDE_SPECIFIC_MODIFIER = re.compile(r"<(?:ctrl|alt|shift|cmd)_[lr]>|<alt_gr>", re.IGNORECASE)
+
+#: Keys that are safe to use as a hotkey on their own, because nobody types with them:
+#: function keys, Escape (the default Stop), and the keys that never produce text.
+_STANDALONE_KEY_NAMES = (
+    "esc",
+    "pause",
+    "scroll_lock",
+    "print_screen",
+    *(f"f{number}" for number in range(1, 21)),
+    "media_play_pause",
+    "media_volume_mute",
+    "media_volume_down",
+    "media_volume_up",
+    "media_previous",
+    "media_next",
+    "media_eject",
+)
+
+
 def _hotkey_signature(text: str) -> frozenset[str]:
     """An order-independent, case-insensitive token set for a pynput hotkey text.
 
     ``"<cmd>+<alt>+t"`` and ``"<ALT>+<cmd>+T"`` press the same keys, so they
-    share a signature. (The same normalisation ``app_settings`` uses.)
+    share a signature. (The same normalisation ``app_settings`` uses.) Only a stand-in for
+    :func:`_parse_hotkey` when pynput cannot be loaded.
     """
     return frozenset(part.strip().strip("<>").lower() for part in text.split("+") if part.strip())
+
+
+def _parse_hotkey(text: str) -> list[Any] | None:
+    """The keys of ``text`` as pynput reads them (``ValueError`` if it cannot), or ``None`` without pynput.
+
+    ``None`` means the keyboard library cannot be loaded here -- the backend reports that
+    when hotkeys are started -- so there is nothing to check a hotkey against.
+    """
+    try:
+        from pynput.keyboard import HotKey
+    except Exception:  # noqa: BLE001 - ImportError, or an X display error at import on Linux
+        return None
+    return HotKey.parse(text)
+
+
+def hotkey_problem(text: str) -> str | None:
+    """Why ``text`` -- which pynput can parse -- would still be a bad global hotkey, or ``None`` if it is fine.
+
+    A global hotkey sees every key press in every app, so one that is made of keys people
+    type with would fire constantly:
+
+    * a letter, digit or other typing key on its own (``t``), or with only Shift
+      (``<shift>+t`` is how a capital T is typed);
+    * nothing but modifiers (``<ctrl>+<alt>``).
+
+    Function keys, Escape and the media keys are fine alone. A modifier spelled for one side
+    (``<ctrl_r>``) never matches what the listener reports; ``<ctrl>`` covers both.
+    The message is written for the person who typed the hotkey.
+    """
+    side_specific = _SIDE_SPECIFIC_MODIFIER.search(text)
+    if side_specific:
+        name = side_specific.group(0).lower()
+        plain = name.strip("<>").split("_")[0]
+        return f"Write <{plain}> instead of {name}. <{plain}> covers both {plain} keys, and {name} may never trigger."
+
+    keys = _parse_hotkey(text)
+    if keys is None:
+        return None
+    from pynput.keyboard import Key
+
+    modifiers = [key for key in keys if isinstance(key, Key)]
+    typing_keys = [key for key in keys if not isinstance(key, Key) and not _is_standalone_key(key)]
+    if all(isinstance(key, Key) for key in keys):
+        return "Add a letter, a digit or a key such as <f9> to go with the modifier keys."
+    if typing_keys and not any(key in (Key.ctrl, Key.alt, Key.cmd) for key in modifiers):
+        if modifiers:  # only Shift
+            return (
+                "Shift on its own is not enough: add <ctrl>, <alt> or <cmd> as well, "
+                "or it would trigger whenever you type a capital letter."
+            )
+        return (
+            "Add a modifier key such as <ctrl>, <alt> or <cmd>: a hotkey of just a typing key "
+            "would trigger every time you press it, in any app."
+        )
+    return None
+
+
+def _is_standalone_key(key: Any) -> bool:
+    """Whether ``key`` (a parsed ``KeyCode``) is one that is safe to use as a hotkey with no modifier."""
+    from pynput.keyboard import Key
+
+    vk = getattr(key, "vk", None)
+    if getattr(key, "char", None) is not None or vk is None:
+        return False
+    return any(
+        name in Key.__members__ and Key[name].value.vk == vk for name in _STANDALONE_KEY_NAMES
+    )
 
 
 def validated_hotkeys(hotkeys: Mapping[str, str]) -> dict[str, str]:
     """``{action: hotkey text}`` for every action in :data:`ACTIONS`, or ``ValueError``.
 
-    Raises with a plain-language message when an action has no hotkey, the
-    text is empty, or two actions would share one hotkey (only one of them
-    could ever fire).
+    Raises with a plain-language message when an action has no hotkey, the text is empty or
+    not a hotkey pynput can read, a hotkey would trigger on ordinary typing (see
+    :func:`hotkey_problem`), or two actions would clash: the same keys, or one hotkey's keys
+    being all of another's plus more (pressing the longer one would also trigger the shorter).
     """
     result: dict[str, str] = {}
     for action in ACTIONS:
@@ -421,14 +561,31 @@ def validated_hotkeys(hotkeys: Mapping[str, str]) -> dict[str, str]:
             raise ValueError(f"The {label} hotkey is empty")
         result[action] = text
 
-    seen: dict[frozenset[str], str] = {}
+    keysets: dict[str, frozenset[Any]] = {}
     for action, text in result.items():
-        signature = _hotkey_signature(text)
-        if signature in seen:
-            raise ValueError(
-                f"{_ACTION_LABELS[seen[signature]]} and {_ACTION_LABELS[action]} use the same hotkey ({text})"
-            )
-        seen[signature] = action
+        label = _ACTION_LABELS[action]
+        try:
+            parsed = _parse_hotkey(text)
+        except ValueError as exc:
+            raise ValueError(f"The {label} hotkey ({text}) is not a valid shortcut") from exc
+        problem = hotkey_problem(text)
+        if problem is not None:
+            raise ValueError(f"The {label} hotkey ({text}): {problem}")
+        keysets[action] = frozenset(parsed) if parsed is not None else _hotkey_signature(text)
+
+    actions = list(result)
+    for index, first in enumerate(actions):
+        for second in actions[index + 1 :]:
+            if keysets[first] == keysets[second]:
+                raise ValueError(
+                    f"{_ACTION_LABELS[first]} and {_ACTION_LABELS[second]} use the same hotkey ({result[second]})"
+                )
+            for shorter, longer in ((first, second), (second, first)):
+                if keysets[shorter] < keysets[longer]:
+                    raise ValueError(
+                        f"The {_ACTION_LABELS[longer]} hotkey ({result[longer]}) contains every key of the "
+                        f"{_ACTION_LABELS[shorter]} hotkey ({result[shorter]}), so it would trigger both"
+                    )
     return result
 
 
@@ -605,6 +762,19 @@ class HotkeyService(QObject):
             self._set_status(STATE_UNAVAILABLE, self._failure_detail(exc))
             return
 
+        try:
+            self._spawn_start_worker(generation, backend, bindings)
+        except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+            _stop_backend(backend)
+            self._set_status(STATE_UNAVAILABLE, self._failure_detail(exc))
+
+    def _spawn_start_worker(
+        self,
+        generation: int,
+        backend: HotkeyBackend,
+        bindings: Mapping[str, Callable[[], None]],
+    ) -> None:
+        """Run :meth:`_start_worker` on a short-lived thread (its own method so a test can make it fail)."""
         threading.Thread(
             target=self._start_worker,
             args=(generation, backend, bindings),
@@ -678,7 +848,9 @@ class HotkeyService(QObject):
         """The plain-language reason for ``exc``, logged on the way. Any thread."""
         if isinstance(exc, HotkeyError):
             detail = str(exc) or _GENERIC_DETAIL
-            logger.warning("Global hotkeys unavailable: %s", detail)
+            # The user-facing reason is plain language; what actually went wrong, if there is more
+            # to it, is the exception this one was raised from, so keep it in the log.
+            logger.warning("Global hotkeys unavailable: %s", detail, exc_info=exc if exc.__cause__ else None)
         elif isinstance(exc, ImportError):
             detail = _IMPORT_DETAIL
             logger.warning("Global hotkeys unavailable: %s (%s)", detail, exc)

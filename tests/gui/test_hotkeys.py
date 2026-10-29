@@ -32,6 +32,7 @@ from auto_essay_typer.gui.hotkeys import (
     HotkeyError,
     HotkeyService,
     PynputHotkeyBackend,
+    hotkey_problem,
     validated_hotkeys,
 )
 from auto_essay_typer.platforms import LinuxSession, OperatingSystem
@@ -341,16 +342,45 @@ def test_an_unexpected_prepare_exception_is_contained_and_logged(make_service, c
     assert any(record.levelno >= logging.ERROR for record in caplog.records)
 
 
-def test_a_start_that_was_superseded_before_its_thread_began_never_starts_the_backend(qtbot, qapp, make_service):
+def test_a_start_that_was_superseded_before_its_thread_began_never_starts_the_backend(
+    qapp, make_service, monkeypatch
+):
     service, factory, _recorder = make_service()
+    release_worker = threading.Event()
+    real_worker = service._start_worker
+
+    def worker_held_back(generation, backend, bindings):
+        assert release_worker.wait(5), "the test never released the worker"
+        real_worker(generation, backend, bindings)
+
+    monkeypatch.setattr(service, "_start_worker", worker_held_back)
+
     service.apply(True, HOTKEYS)
-    service.stop()  # before the worker thread has had a chance to run
+    service.stop()  # the worker has not run a single line yet
+    release_worker.set()
     drain(qapp)
 
     (backend,) = factory.built
-    # Either the worker noticed it was stale before starting, or it started and stopped at once.
-    assert backend.stop_calls >= 1
+    assert backend.start_entered.is_set() is False  # it never started listening...
+    assert backend.stop_calls == 1  # ...and the half-built backend was cleaned up
     assert service.state == "off"
+
+
+def test_a_worker_thread_that_cannot_be_started_makes_the_service_unavailable_not_stuck(make_service, monkeypatch):
+    service, factory, recorder = make_service()
+
+    def cannot_start(*_args):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(service, "_spawn_start_worker", cannot_start)
+
+    service.apply(True, HOTKEYS)  # must not raise
+
+    assert service.state == "unavailable"  # and not left at "starting" forever
+    assert "can't start new thread" in service.detail
+    assert recorder.statuses[-1][0] == "unavailable"
+    (backend,) = factory.built
+    assert backend.stop_calls == 1  # the listener that was built for it is dropped
 
 
 def test_a_slow_start_never_blocks_the_caller(qtbot, make_service):
@@ -688,6 +718,89 @@ def test_validated_hotkeys_explains_what_is_wrong(hotkeys, message):
         validated_hotkeys(hotkeys)
 
 
+# --- hotkey_problem: a hotkey pynput can parse but that would fire while you type -----------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<ctrl>+<alt>+<shift>+t",  # the defaults
+        "<cmd>+<alt>+<shift>+p",
+        "<esc>",  # the default Stop
+        "<f9>",  # function keys are fine alone
+        "<f20>",
+        "<media_play_pause>",
+        "<ctrl>+t",
+        "<alt>+1",
+        "<cmd>+<shift>+/",
+        "<ctrl>+<shift>+<space>",
+        "<ctrl>++",  # a literal plus
+        "<shift>+<f5>",
+    ],
+)
+def test_a_sensible_hotkey_has_no_problem(text):
+    assert hotkey_problem(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("t", "modifier key"),  # would fire on every t typed, in every app
+        ("5", "modifier key"),
+        ("<space>", "modifier key"),
+        ("a+b", "modifier key"),
+        ("<shift>+t", "Shift on its own"),  # that is how a capital T is typed
+        ("<shift>+<space>", "Shift on its own"),
+        ("<ctrl>+<alt>", "to go with the modifier keys"),
+        ("<shift>", "to go with the modifier keys"),
+        ("<ctrl_r>+t", "Write <ctrl> instead of <ctrl_r>"),
+        ("<alt_gr>+t", "Write <alt> instead of <alt_gr>"),
+        ("<cmd_l>+<shift>+t", "Write <cmd> instead of <cmd_l>"),
+    ],
+)
+def test_a_hotkey_that_would_fire_while_typing_is_explained(text, fragment):
+    assert fragment in hotkey_problem(text)
+
+
+@pytest.mark.parametrize(
+    ("hotkeys", "message"),
+    [
+        ({**HOTKEYS, "start": "t"}, r"The Start hotkey \(t\): Add a modifier key"),
+        ({**HOTKEYS, "pause": "<ctrl>+<alt>"}, r"The Pause hotkey .*go with the modifier keys"),
+        ({**HOTKEYS, "stop": "<shift>+x"}, r"The Stop hotkey .*Shift on its own"),
+        ({**HOTKEYS, "start": "<bogus>+t"}, r"The Start hotkey \(<bogus>\+t\) is not a valid shortcut"),
+        # One hotkey containing all of another's keys would trigger both when pressed.
+        (
+            {"start": "<ctrl>+t", "pause": "<ctrl>+<shift>+t", "stop": "<esc>"},
+            r"The Pause hotkey \(<ctrl>\+<shift>\+t\) contains every key of the Start hotkey",
+        ),
+        (
+            {"start": "<f9>", "pause": "<ctrl>+<f9>", "stop": "<esc>"},
+            r"The Pause hotkey \(<ctrl>\+<f9>\) contains every key of the Start hotkey \(<f9>\)",
+        ),
+    ],
+)
+def test_validated_hotkeys_refuses_hotkeys_that_would_misfire(hotkeys, message):
+    with pytest.raises(ValueError, match=message):
+        validated_hotkeys(hotkeys)
+
+
+def test_validated_hotkeys_sees_the_same_keys_written_differently_as_the_same_hotkey():
+    # Both are Ctrl+Alt+Shift+T: a different order and a different case.
+    with pytest.raises(ValueError, match="Start and Pause use the same hotkey"):
+        validated_hotkeys({**HOTKEYS, "pause": "T+<shift>+<alt>+<ctrl>"})
+
+
+def test_a_service_given_a_hotkey_that_would_misfire_is_unavailable_and_starts_nothing(make_service):
+    service, factory, _recorder = make_service()
+
+    service.apply(True, {**HOTKEYS, "start": "t"})  # e.g. from a hand-edited settings file
+
+    assert service.state == "unavailable"
+    assert "Add a modifier key" in service.detail
+    assert factory.built == []  # nothing was built, so nothing is listening to every t typed
+
+
 # --- PynputHotkeyBackend, driven by a fake listener and a virtual clock ----------------------------
 
 
@@ -916,6 +1029,63 @@ def test_an_import_failure_gets_platform_advice():
         backend.start(BINDINGS)
 
 
+def test_a_listener_that_cannot_be_built_on_macos_is_not_blamed_on_permissions(caplog):
+    # Permission trouble shows up later, when the event tap is created. A listener that cannot even
+    # be built is a different fault, and "needs Accessibility access" would send the user to fix
+    # the wrong thing -- so the real reason is in the message, and the traceback in the log.
+    def factory(bindings):
+        raise RuntimeError("keyboard layout lookup failed")
+
+    backend = PynputHotkeyBackend(factory, os_provider=lambda: OperatingSystem.MACOS)
+
+    with caplog.at_level(logging.WARNING, logger="auto_essay_typer.gui.hotkeys"):
+        with pytest.raises(HotkeyError) as excinfo:
+            backend.prepare(BINDINGS)
+
+    assert "RuntimeError: keyboard layout lookup failed" in str(excinfo.value)
+    assert "Accessibility" not in str(excinfo.value)
+    assert any(record.levelno == logging.WARNING and record.exc_info for record in caplog.records)
+
+
+def test_a_listener_is_never_built_off_the_main_thread_on_macos():
+    # Without prepare() having built it on the main thread, start() would build it on whichever
+    # thread called it, and on macOS building it anywhere but the main thread kills the process.
+    backend, _clock, listeners = make_backend(os_=OperatingSystem.MACOS)
+    errors: list[HotkeyError] = []
+
+    def start_from_a_worker():
+        try:
+            backend.start(BINDINGS)
+        except HotkeyError as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=start_from_a_worker, name="fake-start-worker")
+    worker.start()
+    worker.join(5)
+
+    assert len(errors) == 1 and "main thread" in str(errors[0])
+    assert listeners == []  # nothing was built
+
+
+def test_a_prepared_listener_may_be_started_from_a_worker_on_macos():
+    backend, _clock, listeners = make_backend(os_=OperatingSystem.MACOS)
+    backend.prepare(BINDINGS)  # on the main thread, as the service does
+    failures: list[BaseException] = []
+
+    def start_from_a_worker():
+        try:
+            backend.start(BINDINGS)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            failures.append(exc)
+
+    worker = threading.Thread(target=start_from_a_worker, name="fake-start-worker")
+    worker.start()
+    worker.join(5)
+
+    assert failures == [] and len(listeners) == 1 and listeners[0].started
+    backend.stop()
+
+
 def test_a_listener_that_cannot_start_its_thread_is_reported():
     backend, _clock, _listeners = make_backend(start_error=RuntimeError("can't start new thread"))
     with pytest.raises(HotkeyError):
@@ -1109,8 +1279,32 @@ darwin_only = pytest.mark.skipif(
 )
 
 
+#: What the fake keyboard layout makes of a few key codes with no modifier held (the US layout's).
+FAKE_LAYOUT = {0x11: "t", 0x23: "p", 0x00: "a", 0x1D: "0"}
+
+
 @pytest.fixture
-def macos_listener(monkeypatch):
+def fake_layout(monkeypatch):
+    """pynput's key-code-to-character lookup, replaced by a recorder over :data:`FAKE_LAYOUT`.
+
+    ``calls`` collects ``(thread, context, key code, modifier state)``; set ``error`` to make it raise.
+    """
+    from pynput._util import darwin as pynput_darwin
+
+    layout = types.SimpleNamespace(table=dict(FAKE_LAYOUT), calls=[], error=None)
+
+    def fake_keycode_to_string(context, keycode, modifier_state=0):
+        layout.calls.append((threading.current_thread(), context, keycode, modifier_state))
+        if layout.error is not None:
+            raise layout.error
+        return layout.table.get(keycode, "")
+
+    monkeypatch.setattr(pynput_darwin, "keycode_to_string", fake_keycode_to_string)
+    return layout
+
+
+@pytest.fixture
+def macos_listener(monkeypatch, fake_layout):
     """``(listener_class, layout_reads, run_calls)`` with pynput's OS-touching parts faked."""
     from pynput._util import darwin as pynput_darwin
 
@@ -1204,3 +1398,210 @@ def test_the_macos_workaround_still_targets_what_pynputs_listener_does():
     assert "keycode_context" in inspect.getsource(Listener._run)
     assert GlobalHotKeys._run is Listener._run  # GlobalHotKeys inherits it unchanged
     assert callable(ListenerMixin._run)
+
+
+# --- the macOS listener names a pressed letter by its key, not by what Option made of it ------------------
+#
+# pynput names a pressed letter by the character the key *event* carries, and Option changes that:
+# Cmd+Option+Shift+T arrives as the key code of T with the character 'ˇ'. The default hotkeys are of that
+# shape, so without the override in hotkeys.py they could never fire. These tests feed the listener the
+# events it would receive (never starting it) and check which chord completes.
+
+OPTION_SHIFT_T = "ˇ"  # what Option+Shift+T types on a US layout
+
+
+def _press(listener, *keys):
+    for key in keys:
+        listener._on_press(key, False)
+
+
+def _release(listener, *keys):
+    for key in keys:
+        listener._on_release(key, False)
+
+
+@darwin_only
+def test_a_chord_with_option_completes_although_the_event_carries_the_option_character(macos_listener):
+    from pynput.keyboard import Key, KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    fired: list[str] = []
+    listener = listener_class({"<cmd>+<alt>+<shift>+t": lambda: fired.append("start")})
+
+    _press(listener, Key.cmd, Key.alt, Key.shift, KeyCode.from_char(OPTION_SHIFT_T, vk=0x11))
+
+    assert fired == ["start"]
+
+
+@darwin_only
+def test_stock_pynput_would_miss_that_chord(macos_listener):
+    # The reason the override exists, kept as a test so the reason is not forgotten.
+    from pynput.keyboard import GlobalHotKeys, Key, KeyCode
+
+    fired: list[str] = []
+    stock = GlobalHotKeys({"<cmd>+<alt>+<shift>+t": lambda: fired.append("start")})
+
+    _press(stock, Key.cmd, Key.alt, Key.shift, KeyCode.from_char(OPTION_SHIFT_T, vk=0x11))
+
+    assert fired == []
+
+
+@darwin_only
+def test_the_chord_can_be_pressed_again_after_it_is_let_go_in_any_order(macos_listener):
+    from pynput.keyboard import Key, KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    fired: list[str] = []
+    listener = listener_class({"<cmd>+<alt>+<shift>+t": lambda: fired.append("start")})
+    letter = KeyCode.from_char(OPTION_SHIFT_T, vk=0x11)
+
+    _press(listener, Key.cmd, Key.alt, Key.shift, letter)
+    _release(listener, Key.alt, KeyCode.from_vk(0x11), Key.cmd, Key.shift)  # the key-up may carry no character
+    _press(listener, Key.cmd, Key.alt, Key.shift, letter)
+
+    assert fired == ["start", "start"]
+
+
+@darwin_only
+def test_two_chords_on_the_same_modifiers_each_fire_only_their_own_callback(macos_listener):
+    from pynput.keyboard import Key, KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    fired: list[str] = []
+    listener = listener_class(
+        {
+            "<cmd>+<alt>+<shift>+t": lambda: fired.append("start"),
+            "<cmd>+<alt>+<shift>+p": lambda: fired.append("pause"),
+        }
+    )
+
+    _press(listener, Key.cmd, Key.alt, Key.shift, KeyCode.from_char("∏", vk=0x23))  # Option+Shift+P
+
+    assert fired == ["pause"]
+
+
+@darwin_only
+def test_a_key_is_translated_with_the_layout_read_at_construction_and_no_modifiers(macos_listener, fake_layout):
+    from pynput.keyboard import KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+
+    named = listener.canonical(KeyCode.from_char(OPTION_SHIFT_T, vk=0x11))
+
+    assert named == KeyCode.from_char("t")
+    ((_thread, context, key_code, modifier_state),) = fake_layout.calls
+    assert context == ("fake keyboard type", b"fake layout bytes")
+    assert (key_code, modifier_state) == (0x11, 0)
+
+
+@darwin_only
+def test_the_translation_works_on_the_listener_thread(macos_listener, fake_layout):
+    from pynput.keyboard import KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+    named: list[object] = []
+
+    thread = threading.Thread(
+        target=lambda: named.append(listener.canonical(KeyCode.from_char(OPTION_SHIFT_T, vk=0x11))),
+        name="fake-listener-thread",
+    )
+    thread.start()
+    thread.join(5)
+
+    assert named == [KeyCode.from_char("t")]
+    assert fake_layout.calls[0][0] is not threading.main_thread()
+
+
+@darwin_only
+def test_a_key_the_layout_has_no_character_for_is_named_the_way_pynput_names_it(macos_listener, fake_layout):
+    from pynput.keyboard import KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+
+    assert listener.canonical(KeyCode.from_char("Z", vk=0x7F)) == KeyCode.from_char("z")  # just lower-cased
+    assert listener.canonical(KeyCode.from_vk(0x7F)) == KeyCode.from_vk(0x7F)
+
+
+@darwin_only
+def test_a_layout_lookup_that_fails_never_reaches_the_listener_thread(macos_listener, fake_layout):
+    from pynput.keyboard import KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+    fake_layout.error = RuntimeError("the layout went away")
+
+    # An exception here would end the listener for good; the key is named as pynput would instead.
+    assert listener.canonical(KeyCode.from_char("T", vk=0x11)) == KeyCode.from_char("t")
+
+
+@darwin_only
+def test_without_layout_data_nothing_is_translated(macos_listener, fake_layout):
+    from pynput.keyboard import KeyCode
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+    listener._main_thread_context = ("fake keyboard type", None)
+
+    assert listener.canonical(KeyCode.from_char("T", vk=0x11)) == KeyCode.from_char("t")
+    assert fake_layout.calls == []
+
+
+@darwin_only
+def test_special_keys_and_modifiers_are_left_to_pynput(macos_listener, fake_layout):
+    from pynput.keyboard import GlobalHotKeys, Key
+
+    listener_class, _reads, _runs = macos_listener
+    listener = listener_class({HOTKEYS["start"]: noop})
+    stock = GlobalHotKeys({HOTKEYS["start"]: noop})
+
+    for key in (Key.esc, Key.f9, Key.space, Key.cmd, Key.alt_r, Key.shift_r, Key.ctrl):
+        assert listener.canonical(key) == stock.canonical(key), key
+    assert fake_layout.calls == []  # none of them is a character key
+
+
+@darwin_only
+def test_the_chord_fix_still_targets_how_pynput_names_a_pressed_letter():
+    """A tripwire, like the one above: ``canonical`` relies on the key event's key code being kept.
+
+    pynput builds the pressed key from the character in the event and keeps the key code beside it
+    (``vk=vk``). If an upgrade changes that, the override would translate nothing, quietly.
+    """
+    import inspect
+
+    from pynput.keyboard import Listener
+
+    source = inspect.getsource(Listener._event_to_key)
+    assert "CGEventKeyboardGetUnicodeString" in source  # the character comes from the event, Option and all
+    assert "vk=vk" in source  # and the key code is kept alongside it
+
+
+@darwin_only
+def test_with_the_real_keyboard_layout_every_character_key_is_named_by_its_unmodified_character():
+    """No fakes: this machine's layout bytes and the real ``UCKeyTranslate``.
+
+    Whatever character an event carries (here the Option+Shift+T one, for every key), the key is named
+    by what it types with nothing held -- so this holds on any layout, not just the US one.
+    """
+    from pynput._util.darwin import keycode_to_string
+    from pynput.keyboard import KeyCode
+
+    hotkeys._macos_global_hotkeys_class.cache_clear()
+    try:
+        listener = hotkeys._macos_global_hotkeys_class()({HOTKEYS["start"]: noop})  # reads the real layout, here
+        _keyboard_type, layout = listener._main_thread_context
+        if not layout:
+            pytest.skip("this machine has no keyboard layout data to translate with")
+
+        checked = 0
+        for key_code in range(128):
+            plain = keycode_to_string(listener._main_thread_context, key_code)
+            if len(plain) == 1 and plain.isprintable() and not plain.isspace():
+                carried = KeyCode.from_char(OPTION_SHIFT_T, vk=key_code)
+                assert listener.canonical(carried) == KeyCode.from_char(plain.lower()), key_code
+                checked += 1
+        assert checked >= 26  # at the very least the letters
+    finally:
+        hotkeys._macos_global_hotkeys_class.cache_clear()

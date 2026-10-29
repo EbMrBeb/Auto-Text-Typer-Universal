@@ -53,6 +53,7 @@ from auto_essay_typer.gui.hotkeys import (
     STATE_STARTING,
     STATE_UNAVAILABLE,
     HotkeyService,
+    hotkey_problem,
     validated_hotkeys,
 )
 from auto_essay_typer.gui.settings_store import SettingsStore, validate_settings
@@ -82,15 +83,18 @@ _COUNTDOWN_MAX = 30
 HOTKEY_SYNTAX_HINT = (
     "Write each hotkey as keys joined with +, for example <ctrl>+<alt>+<shift>+t. "
     "Modifier and special keys go in angle brackets: <ctrl>, <alt>, <shift>, <cmd>, <esc>, "
-    "<f9>. Letters and digits are written as they are."
+    "<f9>. Letters and digits are written as they are. A letter or digit needs <ctrl>, "
+    "<alt> or <cmd> with it, or the hotkey would trigger while you type."
 )
 
 
 def describe_hotkey_problem(text: str) -> str | None:
-    """Why ``text`` is not a usable hotkey, in words for the person typing it; ``None`` if it parses.
+    """Why ``text`` is not a usable hotkey, in words for the person typing it; ``None`` if it is usable.
 
     pynput reports a bad hotkey by raising ``ValueError`` with just the offending
-    text, which is not something to put in front of a user.
+    text, which is not something to put in front of a user. A hotkey that parses can
+    still be unusable -- one that would trigger on ordinary typing -- and that is
+    explained too (see :func:`~auto_essay_typer.gui.hotkeys.hotkey_problem`).
     """
     text = text.strip()
     if not text:
@@ -112,7 +116,7 @@ def describe_hotkey_problem(text: str) -> str | None:
         )
     except Exception as exc:  # noqa: BLE001 - e.g. the keyboard library cannot load on a headless box
         return f"Could not check this hotkey: {exc}"
-    return None
+    return hotkey_problem(text)
 
 
 class SettingsPage(QWidget, ThemedMixin):

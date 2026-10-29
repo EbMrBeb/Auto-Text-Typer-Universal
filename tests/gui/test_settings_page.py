@@ -299,6 +299,39 @@ def test_a_hotkey_that_is_a_formatting_shortcut_is_rejected_with_a_reason(qtbot,
     assert not settings_file.exists()
 
 
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("t", "modifier key"),  # would trigger on every t typed, in every app
+        ("<shift>+t", "Shift on its own"),  # that is how a capital T is typed
+        ("<ctrl>+<alt>", "to go with the modifier keys"),
+        ("<ctrl_r>+t", "Write <ctrl> instead of <ctrl_r>"),
+    ],
+)
+def test_a_hotkey_that_would_trigger_while_typing_is_rejected_with_a_reason(
+    qtbot, qapp, settings_file, linux, text, reason
+):
+    page, store, _manager = _make_page(qtbot, qapp)
+
+    _commit(qtbot, page, "start", text)
+
+    assert page.hotkey_error_label.isHidden() is False
+    assert page.hotkey_error_label.text().startswith("Start:") and reason in page.hotkey_error_label.text()
+    assert page.hotkey_edits["start"].property("invalid") is True
+    assert dict(store.settings.hotkeys) == LINUX_HOTKEYS
+    assert not settings_file.exists()  # not saved
+
+
+def test_a_hotkey_made_of_all_the_keys_of_another_plus_more_is_rejected(qtbot, qapp, settings_file, linux):
+    page, store, _manager = _make_page(qtbot, qapp)
+    store.update(hotkeys={"start": "<f9>", "pause": "<f10>", "stop": "<esc>"})
+
+    _commit(qtbot, page, "pause", "<ctrl>+<f9>")  # pressing it would press F9 too, and start a run
+
+    assert "contains every key of the Start hotkey" in page.hotkey_error_label.text()
+    assert dict(store.settings.hotkeys) == {"start": "<f9>", "pause": "<f10>", "stop": "<esc>"}
+
+
 def test_every_problem_is_listed_and_fixing_them_clears_the_message_and_saves(qtbot, qapp, settings_file, linux):
     page, store, _manager = _make_page(qtbot, qapp)
     page.hotkey_edits["start"].setText("<bogus>")
@@ -379,6 +412,7 @@ def test_describe_hotkey_problem_names_what_is_wrong_in_plain_words():
     assert "'<bogus>'" in describe_hotkey_problem("<ctrl>+<bogus>")
     assert "valid hotkey" in describe_hotkey_problem("<ctrl>+<ctrl>")  # a key twice
     assert "valid hotkey" in describe_hotkey_problem("<ctrl>+")
+    assert "modifier key" in describe_hotkey_problem("t")  # it parses, but would fire on ordinary typing
     assert "<ctrl>" in HOTKEY_SYNTAX_HINT and "+" in HOTKEY_SYNTAX_HINT
 
 
