@@ -540,6 +540,8 @@ def test_shutdown_stops_the_listener_hides_the_tray_and_stops_any_run(qtbot, mak
     rig = make_rig(driver_factory=_gated_factory(gate, keyboards), keyboards=keyboards)
     rig.shell.start()
     _wait_hotkeys(qtbot, rig)
+    outcomes = []
+    rig.controller.finished.connect(lambda outcome, _message: outcomes.append(outcome))
     rig.tray.clipboard_action.trigger()
     assert gate.blocked.wait(8)
     (backend,) = rig.backends.built
@@ -554,7 +556,11 @@ def test_shutdown_stops_the_listener_hides_the_tray_and_stops_any_run(qtbot, mak
     assert backend.stop_calls >= 1
     assert rig.service.state == "off"
     assert not rig.tray_fakes[0].visible
-    qtbot.waitUntil(lambda: not rig.controller.is_busy, timeout=8000)
+    qtbot.waitUntil(lambda: bool(outcomes), timeout=8000)
+    # The run was cut short by the shutdown. Left alone it would have gone on to the end of the text
+    # (the gate only holds it for a moment) and said "finished".
+    assert outcomes == ["stopped"]
+    assert not rig.controller.is_busy
 
 
 def test_quitting_the_application_stops_the_listener(qtbot, qapp, make_rig):
