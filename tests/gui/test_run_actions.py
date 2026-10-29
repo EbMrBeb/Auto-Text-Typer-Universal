@@ -19,6 +19,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+import shiboken6
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QMessageBox
 
@@ -575,6 +576,42 @@ def test_the_default_confirmation_has_buttons_that_say_what_they_do(qtbot, qapp,
 def test_cancelling_the_default_confirmation_says_no(qtbot, qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "exec", lambda self: (self.buttons()[1].click(), 0)[1])
     assert default_confirm_start(None, "Start typing?", "Type 5 characters?") is False
+
+
+def test_a_confirmation_box_is_deleted_the_moment_it_has_been_answered(qtbot, qapp, monkeypatch):
+    # Made without a parent, it is Python's to free -- and if it were left to the cycle collector
+    # that could happen on the typing thread, which crashes the process (see _dispose).
+    boxes = []
+
+    def fake_exec(self):
+        boxes.append(self)
+        self.buttons()[0].click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+    default_confirm_start(None, "Start typing?", "Type 5 characters?")
+
+    assert shiboken6.isValid(boxes[0]) is False
+
+
+def test_the_permission_dialog_is_deleted_the_moment_it_has_been_dealt_with(
+    qtbot, qapp, tmp_path, recording_driver_factory, monkeypatch
+):
+    factory, _keyboards = recording_driver_factory
+    window = _window(qtbot, qapp, tmp_path, factory, permission_checker=not_granted)
+    dialogs = []
+
+    def fake_exec(self):
+        dialogs.append(self)
+        return 0
+
+    monkeypatch.setattr(run_actions_module.PermissionDialog, "exec", fake_exec)
+    actions = RunActions(window, clipboard_text=lambda: "Hello.", notify=Recorder())
+
+    actions.start_from_clipboard()
+
+    assert shiboken6.isValid(dialogs[0]) is False
 
 
 def test_the_default_permission_prompt_is_the_permission_dialog(

@@ -28,6 +28,7 @@ import logging
 from collections.abc import Callable
 from enum import StrEnum
 
+import shiboken6
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMessageBox, QWidget
@@ -81,15 +82,32 @@ def default_clipboard_text() -> str:
     return clipboard.text() if clipboard is not None else ""
 
 
+def _dispose(widget: QWidget) -> None:
+    """Delete ``widget`` now, on this (the GUI) thread.
+
+    A dialog made without a parent is owned by Python. Left to itself it is destroyed whenever
+    Python next collects garbage, and that can be on the typing thread in the middle of the run
+    it just started, which crashes the process (see ``__main__.collect_garbage_on_the_gui_thread``).
+    Deleting it here, where it was made and used, never depends on that.
+    """
+    try:
+        shiboken6.delete(widget)
+    except Exception:  # noqa: BLE001 - already gone is as good as deleted
+        logger.debug("Could not delete a finished dialog", exc_info=True)
+
+
 def default_confirm_start(parent: QWidget | None, title: str, text: str) -> bool:
     """Ask whether to go ahead, with buttons that say what they do (not Yes and No)."""
     box = QMessageBox(QMessageBox.Icon.Question, title, text, QMessageBox.StandardButton.NoButton, parent)
-    start = box.addButton("Start typing", QMessageBox.ButtonRole.AcceptRole)
-    cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(start)
-    box.setEscapeButton(cancel)
-    box.exec()
-    return box.clickedButton() is start
+    try:
+        start = box.addButton("Start typing", QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(start)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is start
+    finally:
+        _dispose(box)
 
 
 class RunActions(QObject):
@@ -189,8 +207,11 @@ class RunActions(QObject):
             permission_checker=self._window.check_permission,
             parent=parent,
         )
-        dialog.exec()
-        return dialog.granted()
+        try:
+            dialog.exec()
+            return dialog.granted()
+        finally:
+            _dispose(dialog)
 
     def _dialog_parent(self) -> QWidget | None:
         """The window, if it is on screen (a hidden or minimised parent would hide its dialog's home)."""

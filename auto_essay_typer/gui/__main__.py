@@ -18,6 +18,7 @@ from auto_essay_typer import __version__
 from auto_essay_typer.driver import preload_keyboard_backend
 
 if TYPE_CHECKING:  # the Qt classes are imported inside the functions that use them
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     from auto_essay_typer.driver import Driver, Keyboard
@@ -126,6 +127,32 @@ def _self_test() -> int:
         return 1
 
 
+def collect_garbage_on_the_gui_thread(app: QApplication, interval_ms: int = 5000) -> QTimer:
+    """Keep Python's cycle collector off every thread but the GUI thread.
+
+    Python collects cycles on whichever thread allocates when its threshold is crossed, and a
+    typing run's worker thread allocates constantly. A Qt widget or object that Python owns and
+    that sits in a cycle (a dialog that has been closed, say) would then be destroyed *on the
+    worker thread*: Qt posts events about its destruction through the application's Python event
+    filters from the wrong thread, and PySide segfaults in its trampoline -- no Python error,
+    the process just dies, in the middle of a run. So automatic collection is turned off and a
+    timer on the GUI thread collects instead, where those objects belong. A few seconds' delay in
+    freeing a closed dialog costs nothing; a full collection takes a few milliseconds.
+
+    Returns the timer, which the caller must keep alive (``app`` owns it too).
+    """
+    import gc
+
+    from PySide6.QtCore import QTimer
+
+    gc.disable()
+    timer = QTimer(app)
+    timer.setInterval(interval_ms)
+    timer.timeout.connect(gc.collect)
+    timer.start()
+    return timer
+
+
 def launch(
     app: QApplication,
     *,
@@ -210,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
+    _gc_timer = collect_garbage_on_the_gui_thread(app)  # before any worker thread exists
     _window, shell = launch(app)
     try:
         return app.exec()

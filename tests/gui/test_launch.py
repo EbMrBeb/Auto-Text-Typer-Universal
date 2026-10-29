@@ -19,7 +19,7 @@ import sys
 import textwrap
 import threading
 
-from auto_essay_typer.gui.__main__ import launch
+from auto_essay_typer.gui.__main__ import collect_garbage_on_the_gui_thread, launch
 from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import ThemeMode
 from tests.gui.fakes import build_tray, failing_backend, granted, hotkey_service
@@ -188,7 +188,10 @@ _RUN_MAIN_THEN_QUIT = textwrap.dedent(
     QApplication.exec = staticmethod(exec_then_quit_soon)
 
     from auto_essay_typer.gui.__main__ import main
-    raise SystemExit(main([]))
+    code = main([])
+    import gc
+    print("GC_ENABLED=" + str(gc.isenabled()))  # the app turns automatic collection off (see below)
+    raise SystemExit(code)
     """
 )
 
@@ -216,3 +219,29 @@ def test_the_real_main_starts_stays_up_and_quits_cleanly(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
+    # Automatic garbage collection is off in the real app: a collection on the typing thread can
+    # destroy a Qt object there and crash the process. A GUI-thread timer collects instead.
+    assert "GC_ENABLED=False" in result.stdout, result.stdout
+
+
+def test_garbage_is_collected_by_a_timer_on_the_gui_thread_not_by_whichever_thread_allocates(
+    qtbot, qapp, monkeypatch
+):
+    import gc
+
+    calls: list[tuple[str, threading.Thread]] = []
+    monkeypatch.setattr(gc, "disable", lambda: calls.append(("disable", threading.current_thread())))
+    monkeypatch.setattr(gc, "collect", lambda *args: calls.append(("collect", threading.current_thread())) or 0)
+
+    timer = collect_garbage_on_the_gui_thread(qapp, interval_ms=1234)
+    try:
+        assert calls == [("disable", threading.main_thread())]  # automatic collection is switched off...
+        assert timer.interval() == 1234 and timer.isActive()
+        assert timer.parent() is qapp  # (owned by the application, so it lives as long as it does)
+
+        timer.timeout.emit()  # ...and the timer, on this (the GUI) thread, does it instead
+        assert calls[-1] == ("collect", threading.main_thread())
+    finally:
+        timer.stop()
+        timer.setParent(None)
+        timer.deleteLater()
