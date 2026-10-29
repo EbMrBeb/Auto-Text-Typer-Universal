@@ -15,7 +15,6 @@ from urllib.error import HTTPError, URLError
 import pytest
 from PySide6.QtCore import Qt
 
-from auto_essay_typer import targets
 from auto_essay_typer.document import Document, ImportReport, Paragraph, ParagraphStyle, Run
 from auto_essay_typer.gui.document_import import default_start_dir
 from auto_essay_typer.importers import (
