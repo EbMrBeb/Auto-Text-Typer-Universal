@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import QLabel
 
@@ -95,17 +96,34 @@ def test_what_is_typed_comes_from_the_document_never_from_a_widget(qtbot, type_p
     assert rig.keyboards[0].text == session.adapted.plain_text()
 
 
-def test_ctrl_return_starts_a_document_run_too(qtbot, type_page_rig):
+def test_ctrl_return_pressed_in_the_document_view_starts_the_run(qtbot, type_page_rig):
     rig = type_page_rig()
     page = rig.page
     _import(qtbot, page)
-    shortcut = next(s for s in page.findChildren(QShortcut) if s.key().toString() == "Ctrl+Return")
+    page.show()
+    qtbot.waitExposed(page)
+    qtbot.waitActive(page)
+    page.document_view.setFocus()
+    qtbot.waitUntil(page.document_view.hasFocus, timeout=3000)
+
+    # A real key event, to the widget that has focus: the read-only view must not swallow it.
+    with qtbot.waitSignal(rig.controller.finished, timeout=15000) as blocker:
+        qtbot.keyClick(page.document_view, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+
+    assert blocker.args[0] == "finished"
+    assert rig.keyboards[0].text == page.document_session().adapted.plain_text()
+
+
+def test_ctrl_enter_on_the_keypad_starts_a_document_run_too(qtbot, type_page_rig):
+    rig = type_page_rig()
+    page = rig.page
+    _import(qtbot, page)
+    shortcut = next(s for s in page.findChildren(QShortcut) if s.key().toString() == "Ctrl+Enter")
 
     with qtbot.waitSignal(rig.controller.finished, timeout=15000) as blocker:
         shortcut.activated.emit()
 
     assert blocker.args[0] == "finished"
-    assert rig.keyboards[0].text == page.document_session().adapted.plain_text()
 
 
 def test_the_page_returns_to_idle_after_a_document_run_still_showing_the_document(qtbot, type_page_rig):
@@ -193,19 +211,28 @@ def test_start_still_asks_for_permission_first(qtbot, type_page_rig, monkeypatch
 # --- while it types ---------------------------------------------------------------------------------------------------------
 
 
-def _slow_rig(type_page_rig):
+def _slow_rig(type_page_rig, **kwargs):
     keyboard = RecordingKeyboard()
 
     def factory(keymap=None) -> Driver:
         return Driver(keyboard=keyboard, sleep=lambda _s: time.sleep(0.003), countdown_seconds=0, keymap=keymap)
 
-    return type_page_rig(driver_factory=factory), keyboard
+    return type_page_rig(driver_factory=factory, **kwargs), keyboard
 
 
 def test_everything_that_would_change_the_document_is_off_while_it_types(qtbot, type_page_rig):
-    rig, keyboard = _slow_rig(type_page_rig)
+    from auto_essay_typer.importers import load_document
+
+    loads: list[str] = []
+
+    def counting_loader(source):
+        loads.append(source)
+        return load_document(source)
+
+    rig, keyboard = _slow_rig(type_page_rig, loader=counting_loader)
     page = rig.page
     _import(qtbot, page)
+    assert loads == [str(FIXTURE)]
     _clean_profile(page)
 
     page.start_button.click()
@@ -220,7 +247,9 @@ def test_everything_that_would_change_the_document_is_off_while_it_types(qtbot, 
     page._on_import_requested(str(FIXTURE))
     page._on_browse_requested()
     assert page.in_document_mode is True
-    assert rig.chosen == []
+    assert rig.chosen == [], "Browse never opened"
+    assert loads == [str(FIXTURE)], "no second import was started"
+    assert page._importing is False
 
     with qtbot.waitSignal(rig.controller.finished, timeout=15000) as blocker:
         page.stop_button.click()
@@ -259,6 +288,20 @@ def test_preview_in_document_mode_verifies_the_plan_against_the_whole_document(q
         "Output verified: matches your document exactly, formatting included"
     )
     assert "Formatting steps" in _label_texts(dialog)
+
+
+def test_the_preview_of_an_unchecked_editor_carries_the_best_effort_caution(qtbot, type_page_rig, shown_dialogs):
+    page = type_page_rig().page
+    _import(qtbot, page)
+
+    page.preview_button.click()
+    assert shown_dialogs[-1].caution_label.isHidden() is True  # Google Docs' shortcuts are checked
+
+    _pick(page, "microsoft-word")
+    page.preview_button.click()
+    caution = shown_dialogs[-1].caution_label
+    assert caution.isHidden() is False
+    assert "Microsoft Word" in caution.text() and "best effort" in caution.text()
 
 
 def test_the_preview_is_of_the_adapted_document_for_the_chosen_editor(qtbot, type_page_rig, shown_dialogs):
@@ -365,3 +408,70 @@ def test_starting_a_document_builds_the_keyboard_on_the_main_thread(qtbot, type_
         page.start_button.click()
 
     assert built_on == [threading.main_thread()]
+
+
+# --- text that arrives with a byte-order mark ------------------------------------------------------------------------------
+
+
+def test_a_text_file_saved_with_a_byte_order_mark_is_typed_exactly_as_plain_mode_would_type_it(
+    qtbot, type_page_rig, tmp_path
+):
+    from auto_essay_typer import platforms
+
+    raw = "\ufeffDear reader,\r\n\r\nThis is the letter.\r\n"
+    path = tmp_path / "letter.txt"
+    path.write_bytes(raw.encode("utf-8"))
+
+    document_rig = type_page_rig()
+    _import(qtbot, document_rig.page, str(path))
+    with qtbot.waitSignal(document_rig.controller.finished, timeout=15000):
+        document_rig.page.start_button.click()
+
+    plain_rig = type_page_rig()
+    plain_rig.page.set_text(raw)  # the same bytes pasted into the box
+    with qtbot.waitSignal(plain_rig.controller.finished, timeout=15000):
+        plain_rig.page.start_button.click()
+
+    assert "\ufeff" not in document_rig.keyboards[0].text
+    assert document_rig.keyboards[0].text == plain_rig.keyboards[0].text == platforms.normalize_input_text(raw)
+
+
+# --- the estimate shown is always for what is on screen -----------------------------------------------------------------------------
+
+
+def test_an_estimate_for_one_mode_is_never_shown_beside_the_other_modes_text(qtbot, type_page_rig):
+    rig = type_page_rig()
+    page = rig.page
+    page.set_text("Some plain words that will be typed in the plain mode of this page.")
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text() and "~0 s" not in page.counter_label.text(), timeout=10000)
+    plain_estimate = page.counter_label.text()
+
+    _import(qtbot, page)
+    assert "est." not in page.counter_label.text(), "the plain text's estimate must not sit beside the document's counts"
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
+    document_estimate = page.counter_label.text()
+    assert document_estimate != plain_estimate
+
+    page.back_button.click()
+    assert "est." not in page.counter_label.text(), "nor the document's beside the restored text"
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
+
+
+def test_changing_the_editor_does_not_leave_the_old_documents_estimate_on_screen(qtbot, type_page_rig):
+    page = type_page_rig().page
+    _import(qtbot, page)
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
+
+    _pick(page, "plain-text")
+
+    assert "est." not in page.counter_label.text()
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
+
+
+def test_the_estimate_poll_stops_when_nothing_is_being_computed(qtbot, type_page_rig):
+    page = type_page_rig().page
+    page.set_text("Words to estimate.")
+    qtbot.waitUntil(lambda: page._estimate_poll.isActive(), timeout=10000)
+    qtbot.waitUntil(lambda: "est." in page.counter_label.text(), timeout=10000)
+    qtbot.waitUntil(lambda: not page._estimate_poll.isActive(), timeout=3000)
+    assert page._estimates_in_flight == 0

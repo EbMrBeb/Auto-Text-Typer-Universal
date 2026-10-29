@@ -579,3 +579,32 @@ def test_a_plain_text_box_with_nothing_in_it_still_blocks_start_and_preview(qtbo
     page.preview_button.click()
     assert rig.controller.is_busy is False
     assert not rig.keyboards
+
+
+# --- what a person typed is echoed back as text, never as markup ------------------------------------------------------------------
+
+
+def test_an_error_that_echoes_a_path_with_angle_brackets_shows_it_literally(qtbot, type_page_rig):
+    from PySide6.QtCore import Qt
+
+    message = "file not found: /Users/me/<b>essay</b>.docx"
+
+    def loader(source):
+        raise DocumentImportError(message)
+
+    rig = type_page_rig(loader=loader)
+    _import(qtbot, rig.page, "/Users/me/<b>essay</b>.docx")
+
+    label = rig.page.import_bar.message_label
+    assert label.textFormat() == Qt.TextFormat.PlainText
+    assert label.text() == message
+    assert rig.errors == [("Couldn't import the document", message)]
+
+
+def test_an_inline_message_on_the_page_is_plain_text_too(qtbot, type_page_rig):
+    from PySide6.QtCore import Qt
+
+    page = type_page_rig().page
+    page._show_inline_message("Couldn't switch to <i>Word</i>")
+    assert page.inline_message_label.textFormat() == Qt.TextFormat.PlainText
+    assert page.inline_message_label.text() == "Couldn't switch to <i>Word</i>"

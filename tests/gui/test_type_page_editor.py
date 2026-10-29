@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 from auto_essay_typer import platforms, targets
 from auto_essay_typer.actions import FormatOp
+from auto_essay_typer.gui.advanced_common import NoWheelComboBox
 from auto_essay_typer.gui.quick_settings import target_caution
 from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.platforms import OperatingSystem
@@ -357,3 +359,142 @@ def test_resetting_the_settings_returns_the_picker_and_document_to_the_default_e
 
     assert page.selected_target_id() == "google-docs"
     assert page.document_session().target.id == "google-docs"
+
+
+# --- the picker cannot be changed by accident or behind the page's back ----------------------------------------------------------------
+
+
+def _wheel(widget) -> "QWheelEvent":
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    return QWheelEvent(
+        QPointF(5, 5),
+        QPointF(5, 5),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_passing_the_mouse_wheel_over_the_picker_never_changes_the_editor(qtbot, type_page_rig):
+    rig = type_page_rig()
+    page = rig.page
+    # The page scrolls, so the pointer crosses the picker all the time; the editor chosen here
+    # is saved and decides which shortcuts are pressed into another application.
+    assert isinstance(page.target_combo, NoWheelComboBox)
+    assert page.target_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    event = _wheel(page.target_combo)
+
+    page.target_combo.wheelEvent(event)
+
+    assert page.selected_target_id() == "google-docs"
+    assert rig.store.settings.target_app == "google-docs"
+    assert event.isAccepted() is False, "ignored, so the scroll area scrolls instead"
+
+
+def test_settings_changed_while_a_run_types_wait_until_it_is_over(qtbot, type_page_rig):
+    import time
+
+    from auto_essay_typer.driver import Driver, RecordingKeyboard
+
+    keyboard = RecordingKeyboard()
+    rig = type_page_rig(
+        driver_factory=lambda keymap=None: Driver(
+            keyboard=keyboard, sleep=lambda _s: time.sleep(0.003), countdown_seconds=0, keymap=keymap
+        )
+    )
+    page = rig.page
+    _import(qtbot, page)
+    page.mistake_slider.setValue(0)
+    typed_for = page.document_session()
+    page.start_button.click()
+    qtbot.waitUntil(lambda: rig.controller.state == "typing", timeout=15000)
+
+    rig.store.update(target_app="plain-text")  # e.g. saved from another page while this one types
+
+    # What is on screen is still the document that is being typed, for the editor it is typed into.
+    assert page.document_session() is typed_for
+    assert page.selected_target_id() == "google-docs"
+    assert page.document_view.shown_document is typed_for.adapted
+
+    with qtbot.waitSignal(rig.controller.finished, timeout=15000):
+        rig.controller.stop()
+
+    assert page.selected_target_id() == "plain-text"
+    assert page.document_session().target.id == "plain-text"
+    assert page.target_notes_label.text() == targets.get_target("plain-text").notes
+
+
+def test_a_choice_that_could_not_be_saved_survives_an_unrelated_settings_change(qtbot, type_page_rig, tmp_path):
+    unwritable = tmp_path / "settings-is-a-folder"
+    unwritable.mkdir()
+    rig = type_page_rig(store=SettingsStore(unwritable))
+    page = rig.page
+    _import(qtbot, page)
+    _pick(page, "microsoft-word")
+    assert "couldn't be saved" in page.inline_message_label.text()
+
+    unwritable.rmdir()  # the problem goes away ...
+    rig.store.update(show_mini_window=False)  # ... and something else is saved
+
+    assert page.selected_target_id() == "microsoft-word", "the picker must not snap back to the saved editor"
+    assert page.document_session().target.id == "microsoft-word"
+    assert rig.store.settings.target_app == "google-docs"
+    assert page.inline_message_label.isHidden() is False, "it is still true: that choice was never saved"
+
+    _pick(page, "libreoffice-writer")  # now it saves, so the old warning is out of date
+    assert rig.store.settings.target_app == "libreoffice-writer"
+    assert page.inline_message_label.isHidden() is True
+
+
+def test_going_back_to_the_saved_editor_clears_the_warning_about_the_unsaved_one(qtbot, type_page_rig, tmp_path):
+    unwritable = tmp_path / "settings-is-a-folder"
+    unwritable.mkdir()
+    page = type_page_rig(store=SettingsStore(unwritable)).page
+    _pick(page, "microsoft-word")
+    assert page.inline_message_label.isHidden() is False
+
+    _pick(page, "google-docs")
+
+    assert page.inline_message_label.isHidden() is True
+
+
+def test_an_editor_another_store_saved_is_picked_up_when_the_page_is_shown(qtbot, type_page_rig, tmp_path):
+    rig = type_page_rig()  # a page with a store of its own, as when it is not handed the shared one
+    other = SettingsStore(tmp_path / "settings.json")
+    other.update(target_app="plain-text")
+    assert rig.page.selected_target_id() == "google-docs", "it cannot know yet"
+
+    rig.page.show()
+    qtbot.waitExposed(rig.page)
+
+    assert rig.page.selected_target_id() == "plain-text"
+
+
+def test_shortcuts_another_store_saved_are_used_the_moment_a_run_starts(qtbot, type_page_rig, tmp_path):
+    rig = type_page_rig()
+    page = rig.page
+    _import(qtbot, page)
+    other = SettingsStore(tmp_path / "settings.json")
+    other.update(keymap_overrides={"google-docs": {"toggle_bold": "ctrl+shift+b"}})
+
+    with qtbot.waitSignal(rig.controller.finished, timeout=15000):
+        page.start_button.click()
+
+    assert ("ctrl", "shift", "b") in rig.keyboards[0].chords
+
+
+def test_choosing_an_editor_on_a_page_with_its_own_store_keeps_what_another_store_saved(qtbot, type_page_rig, tmp_path):
+    rig = type_page_rig()
+    other = SettingsStore(tmp_path / "settings.json")
+    other.update(keymap_overrides={"google-docs": {"toggle_bold": "ctrl+shift+b"}})
+
+    _pick(rig.page, "microsoft-word")
+
+    saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert saved["target_app"] == "microsoft-word"
+    assert saved["keymap_overrides"] == {"google-docs": {"toggle_bold": "ctrl+shift+b"}}

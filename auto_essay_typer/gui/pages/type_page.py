@@ -25,12 +25,13 @@ listens to the store, so changing either re-adapts a loaded document at once.
 from __future__ import annotations
 
 import dataclasses
+import queue
 import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -49,6 +50,7 @@ from PySide6.QtWidgets import (
 from auto_essay_typer import app_settings, config, platforms, targets
 from auto_essay_typer.actions import FormatOp
 from auto_essay_typer.gui.a11y import announce, spoken_duration
+from auto_essay_typer.gui.advanced_common import NoWheelComboBox
 from auto_essay_typer.gui.document_import import (
     DocumentImporter,
     DocumentLoader,
@@ -90,6 +92,8 @@ from auto_essay_typer.targets import TargetApp
 _DROPPABLE_SUFFIXES = (".txt", ".md")
 #: Debounce delay before a background plan() recomputes the duration estimate.
 _ESTIMATE_DEBOUNCE_MS = 500
+#: How often the GUI thread looks for a finished estimate while one is being computed.
+_ESTIMATE_POLL_MS = 30
 #: States in which the run panel (rather than idle Preview/Start) is shown.
 _RUNNING_STATES = frozenset({"planning", "countdown", "typing", "paused", "resuming"})
 
@@ -190,10 +194,21 @@ class _DropTextEdit(QPlainTextEdit):
             super().insertFromMimeData(source)
 
 
-class _EstimateSignals(QObject):
-    """Delivers a background duration estimate back to the GUI thread."""
+def _compute_estimate(
+    make_actions: Callable[[], list], generation: int, results: "queue.SimpleQueue[tuple[int, float]]"
+) -> None:
+    """The estimate worker's entire body: plan, total the pauses, queue ``(generation, ms)``.
 
-    ready = Signal(int, float)  # generation, duration_ms
+    A plain function holding no Qt object. It used to emit a signal on the page it served,
+    which let a slow worker outlive a closed page and be the last to let go of it, destroying
+    the page's widgets on the wrong thread (Qt forbids that, and it crashed the test suite in
+    an unrelated place). The page now polls ``results`` from a timer on the GUI thread.
+    """
+    try:
+        duration_ms = total_duration_ms(make_actions())
+    except Exception:  # noqa: BLE001 - the estimate is best-effort
+        duration_ms = 0.0
+    results.put((generation, duration_ms))
 
 
 def _card() -> QWidget:
@@ -277,10 +292,15 @@ class TypePage(QWidget):
         self._base_profile = Profile()
         self._chars = 0
         self._words = 0
-        self._duration_ms = 0.0
+        #: Estimated typing time, or ``None`` while it is being worked out again (after a
+        #: change of mode or editor), so the page never shows another document's estimate.
+        self._duration_ms: float | None = 0.0
         self._estimate_generation = 0
-        self._estimate_signals = _EstimateSignals(self)
-        self._estimate_signals.ready.connect(self._on_estimate_ready)
+        self._estimate_results: queue.SimpleQueue[tuple[int, float]] = queue.SimpleQueue()
+        self._estimates_in_flight = 0
+        self._estimate_poll = QTimer(self)
+        self._estimate_poll.setInterval(_ESTIMATE_POLL_MS)
+        self._estimate_poll.timeout.connect(self._poll_estimates)
         self._estimate_timer = QTimer(self)
         self._estimate_timer.setSingleShot(True)
         self._estimate_timer.setInterval(_ESTIMATE_DEBOUNCE_MS)
@@ -290,6 +310,13 @@ class TypePage(QWidget):
         self._session: DocumentSession | None = None
         self._running = False
         self._importing = False
+        #: The editor the settings file named when this page last looked. The picker may be
+        #: ahead of it (a choice that could not be saved), and must then stay where it is
+        #: through changes to other settings.
+        self._saved_target = self._settings_store.settings.target_app
+        #: Settings changed while a run was typing; applied once it is over, so the page never
+        #: shows an editor or document that is not the one being typed.
+        self._settings_changed_during_run = False
         self._last_import_dir = ""
         self._targets: list[TargetApp] = targets.targets_for(platforms.current_os())
         self._importer = DocumentImporter(document_loader, parent=self)
@@ -446,7 +473,10 @@ class TypePage(QWidget):
         editor_row.setSpacing(_ROW_SPACING)
         editor_label = _row_label("Typing into")
         editor_row.addWidget(editor_label)
-        self.target_combo = QComboBox()
+        # Ignores the mouse wheel until it has focus: this page scrolls, and the editor chosen
+        # here is saved and decides which shortcuts are pressed into another application, so
+        # passing the pointer over it must never change it.
+        self.target_combo = NoWheelComboBox()
         self.target_combo.setAccessibleName("Typing into")
         self.target_combo.setToolTip(
             "The application the text is typed into. For an imported document it decides "
@@ -768,22 +798,24 @@ class TypePage(QWidget):
             def make_actions():
                 return plan(text, profile, seed=0)
 
-        # The worker holds the signal carrier and plain data, never the page: if it held
-        # the page and were the last to let go of it, the page's widgets would be
-        # destroyed on this thread, which Qt forbids (and which corrupts its widget list).
-        signals = self._estimate_signals
+        self._estimates_in_flight += 1
+        threading.Thread(
+            target=_compute_estimate, args=(make_actions, generation, self._estimate_results), daemon=True
+        ).start()
+        if not self._estimate_poll.isActive():
+            self._estimate_poll.start()
 
-        def work() -> None:
+    def _poll_estimates(self) -> None:
+        """On the GUI thread: collect whatever estimates the worker threads have finished."""
+        while True:
             try:
-                duration_ms = total_duration_ms(make_actions())
-            except Exception:  # noqa: BLE001 - the estimate is best-effort
-                duration_ms = 0.0
-            try:
-                signals.ready.emit(generation, duration_ms)
-            except RuntimeError:
-                pass  # the page was closed while this was computing: nobody wants the answer
-
-        threading.Thread(target=work, daemon=True).start()
+                generation, duration_ms = self._estimate_results.get_nowait()
+            except queue.Empty:
+                break
+            self._estimates_in_flight -= 1
+            self._on_estimate_ready(generation, duration_ms)
+        if self._estimates_in_flight <= 0:
+            self._estimate_poll.stop()
 
     def _on_estimate_ready(self, generation: int, duration_ms: float) -> None:
         if generation != self._estimate_generation:
@@ -793,7 +825,7 @@ class TypePage(QWidget):
 
     def _render_counter(self) -> None:
         chars_words = f"{self._chars:,} character{'s' if self._chars != 1 else ''}, {self._words:,} word{'s' if self._words != 1 else ''}"
-        if self._chars == 0:
+        if self._chars == 0 or self._duration_ms is None:
             self.counter_label.setText(chars_words)
         else:
             estimate = format_duration_words(self._duration_ms / 1000.0)
@@ -801,13 +833,17 @@ class TypePage(QWidget):
 
     # -- importing a document -------------------------------------------------------
 
+    def _is_idle(self) -> bool:
+        """Nothing is importing and nothing is typing: free to change what will be typed."""
+        return not (self._importing or self._running or self._run_controller.is_busy)
+
     def _on_import_requested(self, source: str) -> None:
-        if self._importing or self._running or self._run_controller.is_busy:
+        if not self._is_idle():
             return
         self._importer.start(source)
 
     def _on_browse_requested(self) -> None:
-        if self._importing or self._running or self._run_controller.is_busy:
+        if not self._is_idle():
             return
         chosen = self._choose_file(self, self._last_import_dir or default_start_dir())
         if not chosen:
@@ -890,6 +926,7 @@ class TypePage(QWidget):
         if self._session is None:
             return
         self._session = None
+        self._duration_ms = None  # the old estimate was for the document, not for this text
         self.document_view.set_document(None)
         self._apply_mode_ui()
         if restore_text is not None:
@@ -900,7 +937,7 @@ class TypePage(QWidget):
 
     def _on_back_to_plain_clicked(self) -> None:
         session = self._session
-        if session is None or self._importing or self._running:
+        if session is None or not self._is_idle():
             return
         self._leave_document_mode(platforms.normalize_input_text(session.document.plain_text()))
         self._hide_inline_message()
@@ -928,6 +965,7 @@ class TypePage(QWidget):
         session = self._session
         if session is None:
             return
+        self._duration_ms = None  # not known again until the estimate for this document arrives
         self.document_view.set_document(session.adapted)
         self.document_source_label.setFullText(f"Imported from {describe_source(session.source)}")
         self.warnings_panel.show_lines(session.plain_warnings, editor_phrase(session.target))
@@ -970,6 +1008,7 @@ class TypePage(QWidget):
 
     def _on_target_changed(self, _index: int) -> None:
         target = self._selected_target()
+        self._hide_inline_message()  # anything it said was about the previous choice
         saved = self._settings_store.settings.target_app
         if target.id != saved:
             try:
@@ -983,16 +1022,31 @@ class TypePage(QWidget):
                 self._show_inline_message(f"Couldn't switch to {target.name}: {exc}")
                 return
             except OSError as exc:
+                # The choice still applies for now (the picker stays on it; see _saved_target),
+                # but the person is told it will not be there next time.
                 self._show_inline_message(
                     f"Now typing into {target.name}, but that choice couldn't be saved: {exc}"
                 )
+            else:
+                self._saved_target = target.id
         self._refresh_target_area()
 
     def _on_settings_changed(self, _settings: object) -> None:
         """The saved settings changed elsewhere: follow the editor and shortcut overrides."""
-        wanted = initial_target_id(self._settings_store.settings.target_app, self._targets)
-        if wanted != self.selected_target_id():
-            self._select_target(wanted)
+        if self._running:
+            self._settings_changed_during_run = True
+            return
+        self._follow_settings()
+
+    def _follow_settings(self) -> None:
+        saved = self._settings_store.settings.target_app
+        if saved != self._saved_target:
+            # Somebody else chose an editor: follow them. (An unrelated settings change
+            # leaves the picker alone, so a choice that could not be saved survives it.)
+            self._saved_target = saved
+            wanted = initial_target_id(saved, self._targets)
+            if wanted != self.selected_target_id():
+                self._select_target(wanted)
         self._refresh_target_area()
 
     def _refresh_target_area(self) -> None:
@@ -1048,9 +1102,15 @@ class TypePage(QWidget):
 
     # -- preview --------------------------------------------------------------------
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        # Coming back from another page: it may have saved shortcuts or an editor meanwhile.
+        self._settings_store.refresh()
+
     def _on_preview_clicked(self) -> None:
         if self._importing:
             return
+        self._settings_store.refresh()
         session = self._session
         if session is not None:
             self._preview_document(session)
@@ -1075,6 +1135,7 @@ class TypePage(QWidget):
             self._theme_manager.tokens,
             parent=self,
             document=session.adapted,
+            caution=target_caution(session.target),
         )
         dialog.exec()
 
@@ -1083,6 +1144,9 @@ class TypePage(QWidget):
     def _on_start_clicked(self) -> None:
         if self._run_controller.is_busy or self._importing:
             return
+        # What is about to be typed must use the shortcuts as saved *now*, not as this page
+        # last heard of them: this may re-adapt the document, so read it afterwards.
+        self._settings_store.refresh()
         session = self._session
         if session is not None:
             if not session.has_text():
@@ -1173,6 +1237,9 @@ class TypePage(QWidget):
 
     def _on_finished(self, outcome: str, message: str) -> None:
         self._set_running_ui(False)
+        if self._settings_changed_during_run:
+            self._settings_changed_during_run = False
+            self._follow_settings()
         if outcome == "failed":
             self._show_inline_message(message)
 
