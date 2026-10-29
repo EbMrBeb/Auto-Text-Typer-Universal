@@ -30,6 +30,21 @@ def _isolated_config(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTO_TEXT_TYPER_SETTINGS", str(tmp_path / "settings.json"))
 
 
+@pytest.fixture(autouse=True)
+def _no_real_permission_prompt(monkeypatch):
+    """Keep a test from making macOS show its own "allow Accessibility access" prompt.
+
+    On macOS, opening a ``PermissionDialog`` also asks the OS to prompt for that access
+    (``platforms.request_input_permission_prompt``). A test that opens one without injecting its
+    own ``request_prompt`` would put a real system dialog on the developer's screen -- from a
+    process that is not even Auto Text Typer. This makes the default a no-op for every GUI test;
+    the tests that care about the call inject their own and check it.
+    """
+    from auto_essay_typer import platforms
+
+    monkeypatch.setattr(platforms, "request_input_permission_prompt", lambda: False)
+
+
 @pytest.fixture
 def recording_driver_factory():
     """A ``driver_factory`` for :class:`~auto_essay_typer.gui.run_controller.RunController`

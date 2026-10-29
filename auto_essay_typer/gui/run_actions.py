@@ -29,7 +29,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 import shiboken6
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMessageBox, QWidget
 
@@ -96,10 +96,21 @@ def _dispose(widget: QWidget) -> None:
         logger.debug("Could not delete a finished dialog", exc_info=True)
 
 
+def _keep_in_front(dialog: QWidget) -> None:
+    """Make ``dialog`` open above other apps' windows even though this app is in the background.
+
+    These dialogs answer a hotkey or a tray click, which usually happens while another app has
+    focus. A window of an inactive app can open behind that app's, and a prompt nobody can see
+    is worse than none: it stays open, and every later hotkey press just waits on it.
+    """
+    dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+
+
 def default_confirm_start(parent: QWidget | None, title: str, text: str) -> bool:
     """Ask whether to go ahead, with buttons that say what they do (not Yes and No)."""
     box = QMessageBox(QMessageBox.Icon.Question, title, text, QMessageBox.StandardButton.NoButton, parent)
     try:
+        _keep_in_front(box)
         start = box.addButton("Start typing", QMessageBox.ButtonRole.AcceptRole)
         cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(start)
@@ -208,6 +219,7 @@ class RunActions(QObject):
             parent=parent,
         )
         try:
+            _keep_in_front(dialog)
             dialog.exec()
             return dialog.granted()
         finally:

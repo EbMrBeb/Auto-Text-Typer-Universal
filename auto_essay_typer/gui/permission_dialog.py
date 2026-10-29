@@ -46,7 +46,7 @@ class PermissionDialog(QDialog):
         tokens: Tokens,
         *,
         permission_checker: Callable[[], PermissionStatus] = platforms.check_input_permission,
-        request_prompt: Callable[[], bool] = platforms.request_input_permission_prompt,
+        request_prompt: Callable[[], bool] | None = None,
         open_settings: Callable[[], bool] = platforms.open_permission_settings,
         current_os: Callable[[], OperatingSystem] = platforms.current_os,
         parent: QWidget | None = None,
@@ -119,7 +119,8 @@ class PermissionDialog(QDialog):
         layout.addLayout(button_row)
 
         if current_os() == OperatingSystem.MACOS:
-            request_prompt()
+            # Looked up now rather than bound as a default, so a test can stand in for the OS prompt.
+            (request_prompt or platforms.request_input_permission_prompt)()
 
     @staticmethod
     def _format_steps(steps: tuple[str, ...]) -> str:
