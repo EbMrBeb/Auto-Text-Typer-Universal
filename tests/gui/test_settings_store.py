@@ -154,3 +154,94 @@ def test_callers_cannot_alias_the_stored_mappings(store_path):
 
 def test_validate_settings_accepts_the_defaults():
     validate_settings(AppSettings())
+
+
+# --- more than one store on the same file -------------------------------------------------------------------------------------
+#
+# Every page is meant to share one store, but a page that is built without one keeps a store of its own, and
+# the file can also be edited by hand or by another copy of the app. Two stores must never silently overwrite
+# each other's changes.
+
+
+def test_refresh_adopts_what_another_store_saved_and_announces_it(qtbot, store_path):
+    mine = SettingsStore(store_path)
+    other = SettingsStore(store_path)
+    other.update(countdown_seconds=9)
+
+    with qtbot.waitSignal(mine.changed, timeout=1000) as blocker:
+        assert mine.refresh() is True
+
+    assert mine.settings.countdown_seconds == 9
+    assert blocker.args[0].countdown_seconds == 9
+
+
+def test_refresh_with_nothing_new_changes_nothing_and_says_nothing(qtbot, store_path):
+    store = SettingsStore(store_path)
+    store.update(countdown_seconds=7)
+    with qtbot.assertNotEmitted(store.changed):
+        assert store.refresh() is False
+        assert store.refresh() is False
+
+
+def test_a_stores_own_save_is_never_mistaken_for_someone_elses(qtbot, store_path):
+    store = SettingsStore(store_path)
+    store.update(countdown_seconds=7)
+    with qtbot.assertNotEmitted(store.changed):
+        store.refresh()
+
+
+def test_an_update_goes_on_top_of_what_another_store_saved_instead_of_over_it(store_path):
+    page_store = SettingsStore(store_path)  # a page built without the shared store
+    shared = SettingsStore(store_path)
+    shared.update(keymap_overrides={"google-docs": {"toggle_bold": "ctrl+shift+b"}})
+
+    page_store.update(target_app="plain-text")  # the page's own, unrelated change
+
+    saved = json.loads(store_path.read_text(encoding="utf-8"))
+    assert saved["target_app"] == "plain-text"
+    assert saved["keymap_overrides"] == {"google-docs": {"toggle_bold": "ctrl+shift+b"}}, "the other store's change survived"
+    assert page_store.settings.keymap_overrides == shared.settings.keymap_overrides
+
+
+def test_resetting_keeps_the_overrides_another_store_saved(store_path):
+    mine = SettingsStore(store_path)
+    other = SettingsStore(store_path)
+    other.update(keymap_overrides={"google-docs": {"toggle_bold": "ctrl+shift+b"}})
+
+    mine.reset_to_defaults()
+
+    assert json.loads(store_path.read_text(encoding="utf-8"))["keymap_overrides"] == {
+        "google-docs": {"toggle_bold": "ctrl+shift+b"}
+    }
+
+
+def test_a_file_that_cannot_be_read_is_ignored_by_refresh_and_replaced_by_the_next_save(qtbot, store_path):
+    store = SettingsStore(store_path)
+    store.update(countdown_seconds=8)
+    store_path.write_text("{ this is not json", encoding="utf-8")
+
+    with qtbot.assertNotEmitted(store.changed):
+        assert store.refresh() is False
+    assert store.settings.countdown_seconds == 8
+
+    store.update(confirm_before_typing=False)
+    saved = json.loads(store_path.read_text(encoding="utf-8"))
+    assert saved["countdown_seconds"] == 8 and saved["confirm_before_typing"] is False
+
+
+def test_refresh_follows_a_settings_file_that_was_deleted_back_to_the_defaults(qtbot, store_path):
+    store = SettingsStore(store_path)
+    store.update(countdown_seconds=8)
+    store_path.unlink()
+
+    with qtbot.waitSignal(store.changed, timeout=1000):
+        assert store.refresh() is True
+
+    assert store.settings == AppSettings()
+
+
+def test_refresh_on_a_store_that_has_never_had_a_file_does_nothing(qtbot, store_path):
+    store = SettingsStore(store_path)
+    with qtbot.assertNotEmitted(store.changed):
+        assert store.refresh() is False
+    assert not store_path.exists()

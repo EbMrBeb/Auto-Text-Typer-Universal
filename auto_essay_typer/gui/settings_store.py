@@ -75,6 +75,8 @@ class SettingsStore(QObject):
         settings, warning = app_settings.load_settings(path)
         self._settings: AppSettings = settings
         self._load_warning: str | None = warning
+        #: What the settings file looked like when this store last read or wrote it.
+        self._stamp_seen = self._stamp()
 
     # -- read access -----------------------------------------------------------
 
@@ -97,16 +99,51 @@ class SettingsStore(QObject):
         warning, self._load_warning = self._load_warning, None
         return warning
 
+    # -- keeping up with the file ------------------------------------------------
+
+    def _stamp(self) -> tuple[int, int] | None:
+        """A cheap fingerprint of the settings file: when it was last written, and its size."""
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
+    def refresh(self) -> bool:
+        """Pick up changes made to the settings file since this store last read or wrote it.
+
+        The file can be changed behind this store's back: by a second ``SettingsStore``
+        in the same process (a page that was not handed the shared one), by another
+        copy of the app, or by hand. Returns ``True`` -- after emitting ``changed`` --
+        if that changed the settings. A file that cannot be read is ignored: the
+        settings this store holds stay, and its next save replaces the damaged file.
+        A store that is the only one touching the file never finds anything here.
+        """
+        stamp = self._stamp()
+        if stamp == self._stamp_seen:
+            return False
+        self._stamp_seen = stamp
+        settings, warning = app_settings.load_settings(self._path)
+        if warning is not None or settings == self._settings:
+            return False
+        self._settings = settings
+        self.changed.emit(settings)
+        return True
+
     # -- changing settings -------------------------------------------------------
 
     def update(self, **changes: Any) -> AppSettings:
         """Apply ``changes`` to the current settings, validate, save, and announce.
+
+        The changes go on top of what is saved *now* (see :meth:`refresh`), so changing
+        one setting never writes over another that a second store saved in the meantime.
 
         Raises ``ValueError`` (with a user-presentable reason) when the result
         would be invalid or could not be loaded back -- nothing is saved and
         nothing changes. Raises ``OSError`` if the file cannot be written; the
         in-memory settings are likewise left as they were.
         """
+        self.refresh()
         return self.replace(self._candidate(changes))
 
     def replace(self, settings: AppSettings) -> AppSettings:
@@ -116,12 +153,14 @@ class SettingsStore(QObject):
         if candidate == self._settings:
             return self._settings
         app_settings.save_settings(candidate, self._path)
+        self._stamp_seen = self._stamp()
         self._settings = candidate
         self.changed.emit(candidate)
         return candidate
 
     def reset_to_defaults(self) -> AppSettings:
         """Restore every preference to its default (see ``_PRESERVED_ON_RESET``)."""
+        self.refresh()
         keep = {name: getattr(self._settings, name) for name in _PRESERVED_ON_RESET}
         return self.replace(AppSettings(**keep))
 
