@@ -72,7 +72,7 @@ def initial_target_id(saved_id: str, choices: Sequence[TargetApp]) -> str:
     carried over from another machine may name an editor that is not listed here.
     """
     ids = [target.id for target in choices]
-    return saved_id if saved_id in ids else ids[0]
+    return saved_id if saved_id in ids or not ids else ids[0]
 
 
 def target_caution(target: TargetApp) -> str:

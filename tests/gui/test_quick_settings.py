@@ -88,3 +88,7 @@ def test_the_caution_says_the_shortcuts_are_best_effort_and_where_to_change_them
     assert "Microsoft Word" in caution
     assert "best effort" in caution
     assert "Advanced page" in caution
+
+
+def test_with_nothing_to_choose_from_the_saved_choice_is_returned_unchanged():
+    assert initial_target_id("google-docs", []) == "google-docs"

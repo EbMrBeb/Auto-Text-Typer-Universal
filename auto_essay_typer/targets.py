@@ -151,10 +151,10 @@ _MICROSOFT_WORD_WINDOWS: dict[FormatOp, Chord] = {
 }
 
 _MICROSOFT_WORD_NOTES = (
-    "Before typing, turn off Word's AutoFormat As You Type list options "
-    "(Tools > AutoCorrect Options). Lists are typed as plain text starting "
-    "with a marker such as “1.” or “•”, and Word would otherwise turn that "
-    "marker into a list of its own and change what was typed."
+    "Before typing, turn off “Automatic bulleted lists” and “Automatic numbered "
+    "lists” under AutoCorrect Options > AutoFormat As You Type. Lists are typed "
+    "as plain text starting with “1.” or “•”, and Word would otherwise turn "
+    "those into a list of its own."
 )
 
 # --- libreoffice-writer --------------------------------------------------------
@@ -192,10 +192,9 @@ _LIBREOFFICE_WRITER_WINDOWS_LINUX: dict[FormatOp, Chord] = {
 }
 
 _LIBREOFFICE_WRITER_NOTES = (
-    "Before typing, turn off the automatic list recognition and replacement "
-    "options under Tools > AutoCorrect Options. Lists are typed as plain text "
-    "starting with a marker such as “1.” or “•”, and LibreOffice would "
-    "otherwise turn that marker into a list of its own, as Word does."
+    "Before typing, turn off Tools > AutoCorrect > While Typing. Lists are "
+    "typed as plain text starting with “1.” or “•”, and LibreOffice would "
+    "otherwise turn those into a list of its own."
 )
 
 # --- textedit --------------------------------------------------------------------
@@ -226,7 +225,8 @@ _PLAIN_TEXT_NOTES = (
     "For any app not listed here: a web form, a chat box, a terminal. "
     "Everything is typed as plain text, so headings, bold, alignment and "
     "lists lose their formatting, and list items start with a typed marker "
-    "such as “•” or “1.”."
+    "such as “•” or “1.”. Each new paragraph presses Enter, which may send a "
+    "message or run a command."
 )
 
 

@@ -291,5 +291,17 @@ def test_every_target_note_is_plain_language_fit_to_show_a_user(target_id):
 
 def test_the_notes_that_ask_for_a_setting_change_name_the_menu_to_find_it_in():
     assert "AutoFormat As You Type" in get_target("microsoft-word").notes
-    assert "AutoCorrect Options" in get_target("libreoffice-writer").notes
+    assert "Automatic bulleted lists" in get_target("microsoft-word").notes
+    assert "AutoCorrect > While Typing" in get_target("libreoffice-writer").notes
     assert "Make Rich Text" in get_target("textedit").notes
+
+
+def test_the_plain_text_note_warns_that_a_new_paragraph_presses_enter():
+    # Typing into a chat box or a terminal, Enter sends the message or runs the command.
+    note = get_target("plain-text").notes
+    assert "presses Enter" in note and "send" in note
+
+
+def test_no_note_sends_a_windows_user_to_a_menu_that_only_exists_on_a_mac():
+    # Word for Windows has no Tools menu; the setting is reached through AutoCorrect Options.
+    assert "Tools >" not in get_target("microsoft-word").notes
