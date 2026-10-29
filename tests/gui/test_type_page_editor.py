@@ -498,3 +498,24 @@ def test_choosing_an_editor_on_a_page_with_its_own_store_keeps_what_another_stor
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert saved["target_app"] == "microsoft-word"
     assert saved["keymap_overrides"] == {"google-docs": {"toggle_bold": "ctrl+shift+b"}}
+
+
+def test_a_refused_choice_goes_back_to_the_editor_that_is_saved_now_not_the_one_saved_earlier(
+    qtbot, type_page_rig, monkeypatch, tmp_path
+):
+    _as(monkeypatch, OperatingSystem.MACOS)
+    path = tmp_path / "settings.json"
+    setup = SettingsStore(path)
+    setup.update(target_app="plain-text")
+    # Cmd+Shift+X is Google Docs' strikethrough shortcut, and nobody else's here.
+    setup.update(hotkeys={"start": "<cmd>+<shift>+x", "pause": "<cmd>+<alt>+<shift>+p", "stop": "<esc>"})
+    rig = type_page_rig(store=SettingsStore(path))
+    assert rig.page.selected_target_id() == "plain-text"
+    # Meanwhile another part of the app (another store) chooses LibreOffice Writer.
+    SettingsStore(path).update(target_app="libreoffice-writer")
+
+    _pick(rig.page, "google-docs")  # refused: it would collide with the hotkey
+
+    assert rig.page.inline_message_label.text().startswith("Couldn't switch to Google Docs")
+    assert rig.store.settings.target_app == "libreoffice-writer"
+    assert rig.page.selected_target_id() == "libreoffice-writer", "back to what is saved, not to what was"

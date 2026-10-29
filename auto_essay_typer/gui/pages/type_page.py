@@ -1019,7 +1019,10 @@ class TypePage(QWidget):
                 # The store refuses a choice that could not be loaded back (for example
                 # an editor whose shortcuts collide with a global hotkey): go back to
                 # the editor that is saved rather than use one that will not be remembered.
-                self._select_target(initial_target_id(saved, self._targets))
+                # (Read again: update() first took up anything another store had saved.)
+                self._select_target(
+                    initial_target_id(self._settings_store.settings.target_app, self._targets)
+                )
                 self._refresh_target_area()
                 self._show_inline_message(f"Couldn't switch to {target.name}: {exc}")
                 return
