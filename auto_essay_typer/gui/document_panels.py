@@ -200,7 +200,10 @@ class WarningsPanel(QWidget):
             )
             self.list_label.setText(f"<ul style='{_WARNING_LIST_STYLE}'>{items}</ul>")
         self.list_label.setVisible(bool(self._lines))
+        # "Everything the app could read", not "everything in the document": this reports
+        # what the importer noticed, and a document can hold things it cannot see.
         self.none_label.setText(
-            f"Nothing is left out. Everything in this document can be reproduced in {editor}."
+            f"No problems found. Everything the app could read from this document can be "
+            f"reproduced in {editor}."
         )
         self.none_label.setVisible(not self._lines)

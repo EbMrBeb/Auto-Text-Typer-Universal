@@ -117,7 +117,8 @@ def test_with_nothing_to_list_the_panel_says_so_and_names_the_editor(qtbot):
     assert panel.none_label.isHidden() is False
     assert panel.list_label.isHidden() is True
     assert panel.none_label.text() == (
-        "Nothing is left out. Everything in this document can be reproduced in Microsoft Word."
+        "No problems found. Everything the app could read from this document can be reproduced in "
+        "Microsoft Word."
     )
 
 

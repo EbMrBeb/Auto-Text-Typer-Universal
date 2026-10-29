@@ -219,7 +219,7 @@ def test_switching_editor_re_adapts_the_document_and_refreshes_the_warnings(qtbo
     assert plain.document is google.document, "adapted again from the imported document"
     assert plain.adapted != google.adapted
     assert len(page.warning_lines()) > len(google_lines)
-    assert any("a plain-text field has no" in line for line in page.warning_lines())
+    assert any("is set up for a plain-text field" in line for line in page.warning_lines())
     # The panel itself, the view and the counter all moved with it.
     assert "plain-text field" in page.warnings_panel.list_label.text()
     assert page.document_view.shown_document is plain.adapted

@@ -182,7 +182,7 @@ def test_the_panel_also_lists_what_the_chosen_editor_cannot_do(qtbot, type_page_
     page = type_page_rig().page
     _import(qtbot, page, str(FIXTURE))
     # The default editor is Google Docs, which has no Title or Subtitle shortcut.
-    assert any("title will be typed as Heading 1, because Google Docs" in line for line in page.warning_lines())
+    assert any("title will be typed as Heading 1, because no title shortcut is set up for Google Docs" in line for line in page.warning_lines())
     assert any("subtitle will be typed as Heading 2" in line for line in page.warning_lines())
 
 
@@ -210,7 +210,8 @@ def test_when_nothing_is_lost_the_panel_says_so_positively(qtbot, type_page_rig,
     assert panel.none_label.isHidden() is False
     assert panel.list_label.isHidden() is True
     assert panel.none_label.text() == (
-        "Nothing is left out. Everything in this document can be reproduced in Google Docs."
+        "No problems found. Everything the app could read from this document can be reproduced in "
+        "Google Docs."
     )
     assert panel.title_label.text() == "What will not be reproduced"
 
