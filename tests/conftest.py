@@ -11,13 +11,15 @@ These keep pynput from ever being real in a test:
   impossible, and fails the test that tries.
 
 And these keep the Qt tests from crashing the process: ``_only_the_main_thread_collects_garbage``
-and ``_collect_garbage_after_each_test`` (both autouse), explained on the first.
+and ``_collect_garbage_after_each_test`` (both autouse), explained on the first. The second also
+deletes the widgets ``qtbot`` closed, which is what keeps the GUI suite fast.
 """
 
 from __future__ import annotations
 
 import contextlib
 import gc
+import sys
 import threading
 from collections.abc import Iterator
 
@@ -78,15 +80,32 @@ def _only_the_main_thread_collects_garbage():
         gc.enable()
 
 
+def _delete_what_qt_was_asked_to_delete_later() -> None:
+    """Run the ``deleteLater()`` calls that are still queued, on this (the main) thread.
+
+    ``qtbot`` closes each registered widget and calls ``deleteLater()`` on it, but Qt only acts on
+    that when an event loop gets round to it, and nothing in a test run does. Without this, every
+    window a test opened stays alive until some later test happens to wait for a signal -- hundreds
+    of widgets per window -- and every ``ThemeManager.apply()`` has to restyle all of them, which
+    made the theme tests take 15 seconds each instead of a fraction of one.
+    """
+    qtcore = sys.modules.get("PySide6.QtCore")
+    if qtcore is None or qtcore.QCoreApplication.instance() is None:
+        return  # no Qt in this test run: nothing was queued
+    qtcore.QCoreApplication.sendPostedEvents(None, qtcore.QEvent.Type.DeferredDelete.value)
+
+
 @pytest.fixture(autouse=True)
 def _collect_garbage_after_each_test():
-    """Collect the test's cycles now, on the main thread (see the session fixture above).
+    """Free the test's widgets and collect its cycles now, on the main thread (see the session fixture above).
 
     Function-scoped autouse fixtures are set up first and torn down last, so this runs
     after ``qtbot`` has closed the test's widgets.
     """
     yield
+    _delete_what_qt_was_asked_to_delete_later()
     gc.collect()
+    _delete_what_qt_was_asked_to_delete_later()  # anything the collection itself asked to have deleted
 
 
 @pytest.fixture(autouse=True)
