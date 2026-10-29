@@ -60,7 +60,7 @@ from pathlib import Path  # noqa: E402
 from PySide6.QtWidgets import QGridLayout, QLabel  # noqa: E402
 
 from auto_essay_typer import targets  # noqa: E402
-from auto_essay_typer.actions import Format, FormatOp  # noqa: E402
+from auto_essay_typer.actions import Format, FormatOp, Pause  # noqa: E402
 from auto_essay_typer.gui.document_session import DocumentSession  # noqa: E402
 from auto_essay_typer.importers import load_document  # noqa: E402
 from auto_essay_typer.planner import plan_document  # noqa: E402
@@ -187,3 +187,38 @@ def test_plain_text_previews_say_text_not_document(qtbot, qapp):
     assert dialog.verification_badge.text() == (
         "Mismatch: the planned output does not match your text exactly — do not use this plan"
     )
+
+
+def test_a_caution_is_shown_muted_under_the_badge_and_hidden_when_there_is_none(qtbot, qapp):
+    session = _session()
+    actions = plan_document(session.adapted, _CLEAN, seed=1)
+
+    plain = PreviewDialog(actions, session.adapted.plain_text(), LIGHT_TOKENS, document=session.adapted)
+    qtbot.addWidget(plain)
+    assert plain.caution_label.isHidden() is True
+
+    caution = "The Microsoft Word shortcuts are a best effort and haven't been checked."
+    cautioned = PreviewDialog(
+        actions, session.adapted.plain_text(), LIGHT_TOKENS, document=session.adapted, caution=caution
+    )
+    qtbot.addWidget(cautioned)
+    assert cautioned.caution_label.isHidden() is False
+    assert cautioned.caution_label.text() == caution
+    assert cautioned.caution_label.objectName() == "MutedLabel"
+    # The verdict itself is not softened: the plan still either matches or does not.
+    assert cautioned.verification_badge.property("tone") == "success"
+
+
+def test_a_plan_that_cannot_be_replayed_says_why_without_nesting_brackets(qtbot, qapp):
+    from auto_essay_typer.actions import Backspace, KeyPress
+
+    session = _session()
+    # Fine as a text trace, but real Google Docs cannot be backspaced across a paragraph break.
+    unreplayable = [Pause(1.0), KeyPress("h"), KeyPress("\n"), Backspace(1)]
+
+    dialog = _document_dialog(qtbot, unreplayable, session)
+
+    text = dialog.verification_badge.text()
+    assert dialog.verification_badge.property("tone") == "danger"
+    assert "do not use this plan. Detail: the plan could not be replayed (" in text
+    assert "((" not in text and "))" not in text

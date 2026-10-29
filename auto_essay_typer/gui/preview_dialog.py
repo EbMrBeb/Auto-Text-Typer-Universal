@@ -98,6 +98,7 @@ class PreviewDialog(QDialog):
         parent: QWidget | None = None,
         *,
         document: Document | None = None,
+        caution: str = "",
     ) -> None:
         """``document``, when given, makes this the preview of a formatted document.
 
@@ -105,6 +106,11 @@ class PreviewDialog(QDialog):
         text) and ``actions`` the plan for ``document``; the badge verifies the
         plan against the whole document, formatting included, instead of
         against ``text`` alone.
+
+        ``caution`` is shown, muted, under the badge. The badge only says the plan
+        reproduces the document in this app's model of an editor; for an editor
+        whose shortcuts have not been checked against a real copy that is worth
+        saying next to it.
         """
         super().__init__(parent)
         self.setWindowTitle("Preview")
@@ -162,9 +168,15 @@ class PreviewDialog(QDialog):
             self.verification_badge.setProperty("tone", "danger")
             self.verification_badge.setText(
                 f"Mismatch: the planned output does not match your {subject} exactly — "
-                "do not use this plan" + (f" ({detail})" if detail else "")
+                "do not use this plan" + (f". Detail: {detail}." if detail else "")
             )
         layout.addWidget(self.verification_badge)
+
+        self.caution_label = QLabel(caution)
+        self.caution_label.setObjectName("MutedLabel")
+        self.caution_label.setWordWrap(True)
+        self.caution_label.setVisible(bool(caution))
+        layout.addWidget(self.caution_label)
 
         timeline_title = QLabel("Timeline")
         timeline_title.setObjectName("SectionTitle")
