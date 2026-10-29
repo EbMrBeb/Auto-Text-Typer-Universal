@@ -298,15 +298,25 @@ class RunController(QObject):
 
         start_time = time.monotonic()
 
+        def honour_stop() -> None:
+            # driver.run() clears an abort requested before it started, so a Stop that
+            # arrived after the check above, while run() was still preparing (a big
+            # document makes that a noticeable while), would otherwise be lost. Once the
+            # driver is running, say it again; the first callback is the soonest to do so.
+            if stop_event.is_set():
+                driver.abort()
+
         def on_countdown(n: int) -> None:
             self._set_state("countdown")
             self.countdownTick.emit(n)
+            honour_stop()
 
         def on_progress(done: int, total: int) -> None:
             self._set_state("typing")
             eta = eta_seconds(done, total_ms, cumulative)
             elapsed = time.monotonic() - start_time
             self.progressChanged.emit(done, total, eta, elapsed)
+            honour_stop()
 
         try:
             result = driver.run(actions, on_progress=on_progress, on_countdown=on_countdown)
