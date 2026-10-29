@@ -210,8 +210,7 @@ def test_when_nothing_is_lost_the_panel_says_so_positively(qtbot, type_page_rig,
     assert panel.none_label.isHidden() is False
     assert panel.list_label.isHidden() is True
     assert panel.none_label.text() == (
-        "No problems found. Everything the app could read from this document can be reproduced in "
-        "Google Docs."
+        "No problems found. Everything the app could read can be reproduced in Google Docs."
     )
     assert panel.title_label.text() == "What will not be reproduced"
 

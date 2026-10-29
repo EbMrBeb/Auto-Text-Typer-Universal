@@ -199,10 +199,11 @@ def _compute_estimate(
 ) -> None:
     """The estimate worker's entire body: plan, total the pauses, queue ``(generation, ms)``.
 
-    A plain function holding no Qt object. It used to emit a signal on the page it served,
-    which let a slow worker outlive a closed page and be the last to let go of it, destroying
-    the page's widgets on the wrong thread (Qt forbids that, and it crashed the test suite in
-    an unrelated place). The page now polls ``results`` from a timer on the GUI thread.
+    A plain function holding no Qt object, on purpose. A worker that held the page (or
+    emitted a signal on it) can outlive a closed page and be the last to let go of it,
+    which destroys the page's widgets on the worker's thread. Qt forbids that, and it
+    corrupts the list of all widgets so the process crashes later, somewhere unrelated.
+    The page polls ``results`` from a timer on the GUI thread instead.
     """
     try:
         duration_ms = total_duration_ms(make_actions())
@@ -248,9 +249,10 @@ class TypePage(QWidget):
 
     ``settings_store`` should be the one the rest of the app shares, so that the
     editor chosen here and the shortcut overrides saved on the Advanced page are
-    the same everywhere. Without one the page keeps a private store of its own,
-    which reads and writes the same file but does not hear about changes another
-    store makes until the app is restarted.
+    the same everywhere, the moment they change. Without one the page keeps a
+    private store of its own. It reads and writes the same file and takes up what
+    another store saved when the page is shown and before Preview or Start (see
+    ``SettingsStore.refresh``), but it cannot hear of a change the moment it is made.
 
     Signals
     -------

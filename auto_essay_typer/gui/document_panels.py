@@ -203,7 +203,6 @@ class WarningsPanel(QWidget):
         # "Everything the app could read", not "everything in the document": this reports
         # what the importer noticed, and a document can hold things it cannot see.
         self.none_label.setText(
-            f"No problems found. Everything the app could read from this document can be "
-            f"reproduced in {editor}."
+            f"No problems found. Everything the app could read can be reproduced in {editor}."
         )
         self.none_label.setVisible(not self._lines)
