@@ -25,6 +25,8 @@ name for a source to show beside the imported document.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import os
 import queue
 import threading
@@ -44,6 +46,11 @@ SUPPORTED_SUFFIXES = (".docx", ".html", ".htm", ".zip", ".txt", ".md")
 FILE_DIALOG_FILTER = "Documents (" + " ".join(f"*{suffix}" for suffix in SUPPORTED_SUFFIXES) + ")"
 
 DocumentLoader = Callable[[str], tuple[Document, ImportReport]]
+
+_log = logging.getLogger(__name__)
+
+#: The byte-order mark some Windows editors put at the start of a UTF-8 text file.
+_BOM = "\ufeff"
 
 _QUOTES = "\"'“”‘’"
 _BARE_GOOGLE_HOSTS = ("docs.google.com/", "drive.google.com/")
@@ -104,12 +111,33 @@ class ImportOutcome:
         return self.error is None
 
 
-def _unexpected_message(error: Exception) -> str:
+def strip_leading_bom(document: Document) -> Document:
+    """``document`` without a byte-order mark at the very start of its text.
+
+    This is the one thing ``platforms.normalize_input_text`` does to text typed or
+    pasted into the text box that an imported file would otherwise miss: a .txt or .md
+    saved by Notepad "with BOM" decodes to a document whose first character is an
+    invisible U+FEFF, which would be typed into the target as a stray character.
+    Everything else normalize_input_text handles (line endings) the importers already
+    do. The same document object comes back when there is no BOM to remove.
+    """
+    paragraphs = document.paragraphs
+    if not paragraphs or not paragraphs[0].runs or not paragraphs[0].runs[0].text.startswith(_BOM):
+        return document
+    first = paragraphs[0]
+    trimmed = first.runs[0].text[len(_BOM) :]
+    runs = first.runs[1:] if not trimmed else (dataclasses.replace(first.runs[0], text=trimmed), *first.runs[1:])
+    return Document((dataclasses.replace(first, runs=runs), *paragraphs[1:]))
+
+
+def _unexpected_message(error: BaseException, source: str) -> str:
     detail = str(error).strip() or type(error).__name__
-    return (
-        f"Something went wrong while reading that document ({detail}). Try downloading it as "
-        "a Word (.docx) file and importing that instead."
+    advice = (
+        "Try downloading it as a Word (.docx) file and importing that instead."
+        if source.lower().startswith(("http://", "https://"))
+        else "Try saving a copy as a Word (.docx) file and importing that instead."
     )
+    return f"Something went wrong while reading that document ({detail}). {advice}"
 
 
 #: How often the GUI thread looks for a finished import. Imports take seconds, and
@@ -123,15 +151,24 @@ def _load_in_background(
     """The worker thread's entire body: run ``loader`` and queue how it ended.
 
     A plain function, not a method, so the thread cannot be holding a Qt object.
+    Whatever the loader does -- even exit the thread with an exception that is not an
+    ``Exception`` -- an outcome is queued, because the page stays busy until it hears one.
     """
+    outcome: ImportOutcome | None = None
     try:
         document, report = loader(source)
-        outcome = ImportOutcome(source, document=document, report=report)
+        outcome = ImportOutcome(source, document=strip_leading_bom(document), report=report)
     except DocumentImportError as exc:
         outcome = ImportOutcome(source, error=str(exc))
     except Exception as exc:  # noqa: BLE001 - a bug in a loader must reach the user as words
-        outcome = ImportOutcome(source, error=_unexpected_message(exc))
-    results.put(outcome)
+        _log.exception("Importing %r failed", source)
+        outcome = ImportOutcome(source, error=_unexpected_message(exc, source))
+    finally:
+        if outcome is None:
+            outcome = ImportOutcome(
+                source, error=_unexpected_message(RuntimeError("the import was interrupted"), source)
+            )
+        results.put(outcome)
 
 
 class DocumentImporter(QObject):

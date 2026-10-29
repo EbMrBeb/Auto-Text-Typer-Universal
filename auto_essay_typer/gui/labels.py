@@ -31,11 +31,14 @@ class WrappingLabel(QLabel):
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
+        # Plain text unless a caller says otherwise: these labels show messages that echo
+        # what a person typed (a path, a link), and a "<b>" in one must not become markup.
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setWordWrap(True)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override
         hint = super().minimumSizeHint()
-        if self.width() > 0:  # before the first layout there is no width to wrap at
+        if self.width() > 0:  # a label squeezed to nothing has no width to wrap at
             hint.setHeight(max(hint.height(), self.heightForWidth(self.width())))
         return hint
 
@@ -52,13 +55,20 @@ class ElidedLabel(QLabel):
     ellipsis in the middle, where a file's name and its extension both stay
     readable. The whole text is its tooltip and its accessible name (a screen
     reader reads the name, not the shortened text on screen); read it back with
-    :meth:`fullText`, since :meth:`text` is only what is showing.
+    :meth:`fullText`, since :meth:`text` is only what is showing. Setting the text
+    by either name (``setText`` or :meth:`setFullText`) sets the whole text. It is
+    shown as plain text: it holds things like file names, and a "<b>" in one must
+    not become markup.
     """
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._full_text = ""
+        self.setFullText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt override
         self.setFullText(text)
 
     def fullText(self) -> str:  # noqa: N802 - Qt-style accessor
@@ -80,4 +90,4 @@ class ElidedLabel(QLabel):
             self._full_text, Qt.TextElideMode.ElideMiddle, max(0, self.width())
         )
         if shown != self.text():
-            self.setText(shown)
+            super().setText(shown)

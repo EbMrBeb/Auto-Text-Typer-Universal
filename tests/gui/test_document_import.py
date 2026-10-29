@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from PySide6.QtWidgets import QFileDialog
 
-from auto_essay_typer.document import Document, ImportReport, Paragraph, Run
+from auto_essay_typer.document import Document, ImportReport, Paragraph, ParagraphStyle, Run, TextStyle
 from auto_essay_typer.gui import document_import
 from auto_essay_typer.gui.document_import import (
     FILE_DIALOG_FILTER,
@@ -19,6 +18,7 @@ from auto_essay_typer.gui.document_import import (
     clean_source,
     default_choose_file,
     describe_source,
+    strip_leading_bom,
 )
 from auto_essay_typer.importers import (
     AccessDeniedError,
@@ -264,27 +264,99 @@ def test_the_real_importers_missing_file_message_comes_through(qtbot, tmp_path):
     assert "file not found" in outcome.error
 
 
-def test_a_loader_that_finishes_after_the_importer_is_gone_does_not_raise(qtbot, monkeypatch):
-    """A window closed mid-import must not leave an exception behind on the worker thread."""
-    import shiboken6
+def test_an_unexpected_failure_is_logged_with_its_traceback_for_whoever_has_to_fix_it(qtbot, caplog):
+    def broken_loader(source):
+        raise KeyError("boom")
 
-    release = threading.Event()
-    created: list[threading.Thread] = []
+    with caplog.at_level("ERROR", logger=document_import.__name__):
+        outcome = _import(qtbot, DocumentImporter(broken_loader), "essay.docx")
 
-    class RecordingThread(threading.Thread):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            created.append(self)
+    assert outcome.ok is False
+    (record,) = [r for r in caplog.records if r.name == document_import.__name__]
+    assert "essay.docx" in record.getMessage()
+    assert record.exc_info and record.exc_info[0] is KeyError
 
-    monkeypatch.setattr(document_import, "threading", SimpleNamespace(Thread=RecordingThread))
-    importer = DocumentImporter(lambda source: (release.wait(5), (DOCUMENT, REPORT))[1])
-    errors: list[BaseException] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
 
-    importer.start("x")
-    shiboken6.delete(importer)  # the page was destroyed while the loader was still running
-    release.set()
-    created[0].join(5)
+def test_the_advice_after_an_unexpected_failure_fits_where_the_document_came_from(qtbot):
+    def broken_loader(source):
+        raise ValueError("bad")
 
-    assert not created[0].is_alive()
-    assert errors == []
+    from_a_link = _import(qtbot, DocumentImporter(broken_loader), "https://docs.google.com/document/d/abc/edit")
+    from_a_file = _import(qtbot, DocumentImporter(broken_loader), "/Users/me/essay.docx")
+
+    assert "downloading it as a Word (.docx) file" in from_a_link.error
+    assert "downloading" not in from_a_file.error
+    assert "saving a copy as a Word (.docx) file" in from_a_file.error
+
+
+def test_a_loader_that_leaves_in_an_unusual_way_still_ends_the_import():
+    """The page stays busy until it hears an outcome, so there must always be one."""
+    import queue
+
+    results: queue.SimpleQueue = queue.SimpleQueue()
+
+    def quitting_loader(source):
+        raise SystemExit(3)
+
+    with pytest.raises(SystemExit):  # not swallowed ...
+        document_import._load_in_background(quitting_loader, "essay.docx", results)
+
+    outcome = results.get_nowait()  # ... but not left unanswered either
+    assert outcome.ok is False
+    assert "the import was interrupted" in outcome.error
+
+
+# --- the byte-order mark --------------------------------------------------------------------------------------------------
+
+
+def test_a_byte_order_mark_at_the_start_of_the_text_is_removed():
+    document = Document((Paragraph((Run("\ufeffFirst words"),)), Paragraph((Run("second"),))))
+    cleaned = strip_leading_bom(document)
+    assert cleaned.plain_text() == "First words\nsecond"
+    assert cleaned.paragraphs[1] is document.paragraphs[1]
+
+
+def test_a_document_with_no_byte_order_mark_comes_back_as_the_same_object():
+    document = Document((Paragraph((Run("plain"),)),))
+    assert strip_leading_bom(document) is document
+    assert strip_leading_bom(Document(())) == Document(())
+    assert strip_leading_bom(Document((Paragraph(),))) == Document((Paragraph(),))
+
+
+def test_a_run_that_was_only_a_byte_order_mark_disappears_and_the_rest_keeps_its_styles():
+    bold = frozenset({TextStyle.BOLD})
+    document = Document(
+        (Paragraph((Run("\ufeff"), Run("bold words", bold)), style=ParagraphStyle.HEADING_1),)
+    )
+    cleaned = strip_leading_bom(document)
+    (paragraph,) = cleaned.paragraphs
+    assert paragraph.runs == (Run("bold words", bold),)
+    assert paragraph.style is ParagraphStyle.HEADING_1
+
+
+def test_a_lone_byte_order_mark_leaves_an_empty_paragraph():
+    cleaned = strip_leading_bom(Document((Paragraph((Run("\ufeff"),)), Paragraph((Run("next"),)))))
+    assert cleaned.plain_text() == "\nnext"
+
+
+def test_only_a_mark_at_the_very_start_is_removed():
+    # Plain mode's normalize_input_text drops one leading mark and nothing else; so does this.
+    document = Document((Paragraph((Run("a\ufeffb"),)), Paragraph((Run("\ufeffsecond"),))))
+    assert strip_leading_bom(document) is document
+    twice = Document((Paragraph((Run("\ufeff\ufeffx"),)),))
+    assert strip_leading_bom(twice).plain_text() == "\ufeffx"
+
+
+def test_a_text_file_saved_with_a_byte_order_mark_and_windows_line_endings_imports_clean(qtbot, tmp_path):
+    from auto_essay_typer import platforms
+
+    path = tmp_path / "notepad.txt"
+    raw = "\ufeffFirst line\r\nSecond line\r\n"
+    path.write_bytes(raw.encode("utf-8"))
+
+    outcome = _import(qtbot, DocumentImporter(), str(path))
+
+    assert outcome.ok
+    # Exactly what plain mode would type for the same text pasted into the box.
+    assert outcome.document.plain_text() == platforms.normalize_input_text(raw)
+    assert "\ufeff" not in outcome.document.plain_text()

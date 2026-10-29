@@ -103,3 +103,45 @@ def test_an_elided_label_never_widens_its_parent(qtbot):
     QHBoxLayout(holder).addWidget(ElidedLabel("x" * 400))
     qtbot.addWidget(holder)
     assert holder.minimumSizeHint().width() < 100
+
+
+# --- plain text, and setting the text either way ---------------------------------------------------------------------------
+
+
+def test_both_labels_show_what_they_are_given_as_text_never_as_markup(qtbot):
+    from PySide6.QtCore import Qt
+
+    from auto_essay_typer.gui.labels import ElidedLabel, WrappingLabel
+
+    for label in (WrappingLabel("a <b>bold</b> claim"), ElidedLabel("a <b>bold</b> claim")):
+        qtbot.addWidget(label)
+        assert label.textFormat() == Qt.TextFormat.PlainText
+        assert "<b>" in (label.fullText() if hasattr(label, "fullText") else label.text())
+
+
+def test_a_wrapping_label_can_still_be_given_rich_text_on_purpose(qtbot):
+    from PySide6.QtCore import Qt
+
+    from auto_essay_typer.gui.labels import WrappingLabel
+
+    label = WrappingLabel("<ul><li>one</li></ul>")
+    qtbot.addWidget(label)
+    label.setTextFormat(Qt.TextFormat.RichText)
+    assert label.textFormat() == Qt.TextFormat.RichText
+
+
+def test_setting_an_elided_labels_text_the_ordinary_way_sets_the_whole_text(qtbot):
+    from auto_essay_typer.gui.labels import ElidedLabel
+
+    label = ElidedLabel()
+    qtbot.addWidget(label)
+    label.show()
+    qtbot.waitExposed(label)
+    label.resize(120, 20)
+
+    label.setText("a-very-long-file-name-that-cannot-possibly-fit-in-this-label.docx")
+
+    assert label.fullText() == "a-very-long-file-name-that-cannot-possibly-fit-in-this-label.docx"
+    assert label.text() != label.fullText()
+    label.resize(900, 20)  # a later resize must not throw the text away
+    assert label.text() == label.fullText()
