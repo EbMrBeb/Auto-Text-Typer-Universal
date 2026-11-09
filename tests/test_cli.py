@@ -1,9 +1,67 @@
 import tomllib
+from pathlib import Path
 
 import pytest
 
-from auto_essay_typer.cli import build_profile, main, parse_args
+from auto_essay_typer.cli import _EPILOG, build_profile, main, parse_args
 from auto_essay_typer.profiles import Profile
+
+#: The entry-point target whose installed command name ``--help`` advertises.
+_CLI_ENTRY_POINT = "auto_essay_typer.cli:main"
+
+
+def _installed_commands() -> dict[str, str]:
+    """Every command ``pyproject.toml`` installs, mapped to its entry-point target."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    return {**project.get("scripts", {}), **project.get("gui-scripts", {})}
+
+
+def _installed_cli_name() -> str:
+    """The command actually installed for ``cli:main``.
+
+    Read out of the packaging metadata rather than repeated here: the point of
+    the tests below is that the help text names a command the user's shell can
+    really find, and a second hardcoded copy of that name could only ever
+    drift away from the installed one alongside the first.
+    """
+    names = sorted(
+        name for name, target in _installed_commands().items() if target == _CLI_ENTRY_POINT
+    )
+    assert len(names) == 1, f"expected one installed command for {_CLI_ENTRY_POINT}, got {names}"
+    return names[0]
+
+
+def _help_text(capsys) -> str:
+    """Everything ``--help`` prints (argparse exits 0 afterwards)."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+    assert exit_info.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_help_usage_line_names_the_installed_command(capsys):
+    assert _help_text(capsys).startswith(f"usage: {_installed_cli_name()} ")
+
+
+def test_help_never_names_a_command_that_is_not_installed(capsys):
+    # Catches a stale name anywhere in the help -- a flag's own help string as
+    # much as the usage line -- not only in the examples checked below.
+    # Hyphenated, so a module path like auto_essay_typer.cli is not a command.
+    mentioned = {word for word in _help_text(capsys).split() if "-typer" in word}
+    assert mentioned, "the help text should name the command being run"
+    assert mentioned <= set(_installed_commands())
+
+
+def test_every_help_example_invokes_the_installed_command(capsys):
+    examples = [
+        line.strip() for line in _EPILOG.splitlines() if line.startswith("  ") and line.strip()
+    ]
+    assert examples, "the help epilog should carry copy-pasteable examples"
+    assert {example.split()[0] for example in examples} == {_installed_cli_name()}
+    # And every one of them must survive into what the user is actually shown.
+    out = _help_text(capsys)
+    assert all(example in out for example in examples)
 
 
 def test_preset_sets_the_typo_rate():
