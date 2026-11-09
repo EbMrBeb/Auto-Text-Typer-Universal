@@ -15,8 +15,6 @@
 
 .EXAMPLE
     packaging/build_windows.ps1
-    packaging/build_windows.ps1 -AttEntry packaging/spike_app.py
-    $env:ATT_ENTRY = "packaging/spike_app.py"; packaging/build_windows.ps1
 #>
 [CmdletBinding()]
 param(

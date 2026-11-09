@@ -10,7 +10,6 @@
 #
 # Usage:
 #   packaging/build_linux.sh
-#   ATT_ENTRY=packaging/spike_app.py packaging/build_linux.sh
 #
 # Requires PyInstaller to have been run on Linux (its bootloader is not
 # cross-buildable), plus a desktop 'tar' and either a pre-installed

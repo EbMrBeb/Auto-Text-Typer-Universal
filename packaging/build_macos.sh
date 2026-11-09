@@ -12,7 +12,7 @@
 #
 # Usage:
 #   packaging/build_macos.sh
-#   ATT_ENTRY=packaging/spike_app.py ATT_TARGET_ARCH=universal2 packaging/build_macos.sh
+#   ATT_TARGET_ARCH=universal2 packaging/build_macos.sh
 #
 # universal2 requires every bundled native binary (Python itself, every C
 # extension, every Qt/pynput shared library) to already be a universal2

@@ -3,14 +3,17 @@
 
 Builds a windowed (no console), onedir application for whichever platform
 `pyinstaller` runs on. Two things come from the environment rather than
-being hardcoded, so this one spec drives every platform, and both the
-packaging spike and (later) the real GUI, from build_macos.sh /
-build_windows.ps1 / build_linux.sh and the release workflow:
+being hardcoded, so this one spec drives every platform from
+build_macos.sh / build_windows.ps1 / build_linux.sh and the release
+workflow:
 
     ATT_ENTRY         Entry-point script, relative to the repo root.
-                       Defaults to packaging/launch_gui.py (the real GUI,
-                       via auto_essay_typer.gui.__main__). The packaging
-                       spike instead sets this to packaging/spike_app.py.
+                       Defaults to packaging/launch_gui.py -- the real Qt
+                       GUI, via auto_essay_typer.gui.__main__ -- which is
+                       what every shipped build packages. It stays
+                       overridable so a one-off diagnostic build can be
+                       pointed at another script without editing this spec;
+                       nothing in CI or the release workflow sets it.
     ATT_TARGET_ARCH    macOS only: forwarded to EXE(target_arch=...).
                        "universal2", "arm64", "x86_64", or unset for the
                        native arch of the machine running PyInstaller.
