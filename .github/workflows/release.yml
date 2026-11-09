@@ -6,15 +6,15 @@ on:
       - "v*"
   workflow_dispatch:
 
-env:
-  # Auto Text Typer's real Qt GUI (auto_essay_typer.gui) does not exist
-  # yet, so every build job below packages the packaging spike
-  # (packaging/spike_app.py) instead, to prove PyInstaller packaging
-  # itself works end to end on all three platforms.
-  #
-  # Once the real GUI ships, switch this single line to:
-  #   ATT_ENTRY: packaging/launch_gui.py
-  ATT_ENTRY: packaging/spike_app.py
+# Every build job below packages Auto Text Typer's real Qt GUI
+# (auto_essay_typer.gui, via packaging/launch_gui.py). That entry point is
+# the shared default of the PyInstaller spec and all three build scripts, so
+# this workflow deliberately sets no ATT_ENTRY override: the release builds
+# the same thing a local `packaging/build_*.sh` does, and there is exactly
+# one place the entry point is defined. Do not reintroduce an ATT_ENTRY here
+# to build something other than the shipping app -- a published installer
+# that launches anything but the real GUI is the one failure a tagged
+# release cannot take back.
 
 permissions:
   contents: read

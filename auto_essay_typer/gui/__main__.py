@@ -41,10 +41,19 @@ _SELFTEST_TIMEOUT_MS = 15_000
 def _self_test() -> int:
     """Headless, no-window round trip: plan a sample sentence, type it with a
     RecordingKeyboard through the real MainWindow's own RunController, and
-    verify the typed text matches exactly. Never shows a window."""
+    verify the typed text matches exactly. Then verify a *verifying* SSL
+    context can still be built inside this (possibly frozen) interpreter, and
+    report which trust store it came from. Never shows a window, and never
+    opens a network connection.
+
+    This is the only gate the release workflow runs against a *built* app on
+    all three platforms, so whatever it covers is what a published installer
+    is actually guaranteed to do."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     try:
+        import ssl
+
         from PySide6.QtCore import QEventLoop, QSettings, QTimer
         from PySide6.QtWidgets import QApplication
 
@@ -52,6 +61,7 @@ def _self_test() -> int:
         from auto_essay_typer.gui.main_window import MainWindow
         from auto_essay_typer.gui.settings_store import SettingsStore
         from auto_essay_typer.gui.theme import ThemeManager
+        from auto_essay_typer.net import create_ssl_context, describe_ssl_backend
         from auto_essay_typer.planner import plan
         from auto_essay_typer.profiles import PRESETS
         from auto_essay_typer.simulator import total_duration_ms
@@ -120,7 +130,28 @@ def _self_test() -> int:
 
             window.close()
 
-        print(f"SELFTEST OK {len(actions)} actions, {duration_ms:.0f}ms estimated")
+        # Importing a Google Doc needs a *verifying* SSL context, and a frozen
+        # interpreter carries its own OpenSSL with no usable default CA store --
+        # which is the whole reason auto_essay_typer.net layers truststore over
+        # a Linux system bundle over certifi. Nothing above touches any of that,
+        # so without this check a build whose CA data never made it into the
+        # bundle would pass every release job and then fail every user's first
+        # import with a certificate error. Builds the context and inspects it;
+        # it opens no connection, so the self-test stays entirely offline.
+        ssl_context = create_ssl_context()
+        if ssl_context.verify_mode != ssl.CERT_REQUIRED or not ssl_context.check_hostname:
+            print("SELFTEST FAILED: the TLS context does not verify certificates")
+            return 1
+        # Which backend a build settled on is reported, not asserted on: all
+        # three are legitimate, but seeing "certifi bundle" on macOS or Windows
+        # says truststore could not reach the OS trust store from inside the
+        # bundle, which costs users their employer's or school's custom roots.
+        tls_backend = describe_ssl_backend()
+
+        print(
+            f"SELFTEST OK {len(actions)} actions, {duration_ms:.0f}ms estimated, "
+            f"TLS trust: {tls_backend}"
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - must always print a clean one-liner
         print(f"SELFTEST FAILED: {exc}")

@@ -5,8 +5,7 @@ PyInstaller unpacks bundled data next to ``sys._MEIPASS`` (set for both
 onedir and onefile builds), while running from source instead reaches
 ``assets/`` two directories up from this file. See
 ``packaging/pyinstaller/auto_text_typer.spec``'s ``datas=`` entry, which is
-what puts ``assets/`` there in a build, and ``packaging/spike_app.py``'s
-``assets_dir()``, which this mirrors.
+what puts ``assets/`` there in a build.
 """
 
 from __future__ import annotations

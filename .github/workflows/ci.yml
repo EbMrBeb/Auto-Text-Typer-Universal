@@ -2,6 +2,13 @@ name: CI
 
 on:
   push:
+    # A bare `push:` fires on tag pushes too, so cutting a release would run
+    # this whole three-OS matrix a second time against a commit its own branch
+    # has already tested -- while release.yml is independently building and
+    # `--self-test`ing that same commit on those same three platforms. Tags
+    # belong to release.yml; branch pushes and PRs still land here.
+    tags-ignore:
+      - "**"
   pull_request:
 
 # Cancel superseded runs on the same branch/PR instead of burning CI minutes
