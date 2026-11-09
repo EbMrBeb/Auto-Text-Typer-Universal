@@ -5,12 +5,23 @@ against a recording sink instead of typing into the developer's own terminal.
 ``PynputKeyboard`` is only imported lazily, so the rest of the package -- and
 the whole test suite -- works without accessibility permission.
 
-``Format`` actions do not type text at all: they press a Google Docs
-keyboard shortcut (:meth:`Keyboard.press_chord`), looked up in a ``keymap``
-supplied to :class:`Driver`. ``Driver.run`` validates every ``Format`` op the
-action stream uses against that keymap up front, before the countdown or any
-keystroke, so an unreachable formatting command is reported once and clearly
-rather than discovered mid-run by silently skipping it.
+``Format`` actions do not type text at all: they press a keyboard shortcut
+(:meth:`Keyboard.press_chord`) for the abstract ``FormatOp`` they carry --
+"toggle bold", "set heading 2" -- resolved through the ``keymap`` given to
+:class:`Driver`. That keymap belongs to the target editor being typed into
+(``targets.keymap_for``, with the user's own overrides on top), so one
+unchanged action stream presses Google Docs' chords, Word's, or LibreOffice
+Writer's depending only on which keymap the driver was built with. Google
+Docs is the reference editor the document model was designed against, and
+the keymap used when none is given -- not the only target.
+
+``Driver.run`` validates every ``Format`` op the action stream uses against
+that keymap up front, before the countdown or any keystroke, so an op the
+target cannot reach is reported once and clearly rather than discovered
+mid-run by silently skipping it. Ordinarily nothing trips that check:
+``keymaps.adapt_document`` has already rewritten the document down to the ops
+its target can express before planning. An op the keymap maps to
+``keymaps.NO_OP`` counts as handled and presses nothing.
 
 ``PynputKeyboard`` types through one process-wide pynput ``Controller`` that
 must be *built* on the main thread (see :func:`preload_keyboard_backend` for
