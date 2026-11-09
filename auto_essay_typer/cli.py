@@ -29,21 +29,25 @@ _EPILOG = """\
 precedence (lowest to highest): --preset/--profile  <  --wpm/--typo-rate  <  --set
 
 examples:
-  auto-essay-typer essay.txt --preset sloppy --dry-run
-  auto-essay-typer essay.txt --profile natural --set wpm=90 --set session_breaks=false
-  auto-essay-typer essay.txt --preset natural --wpm 80 --save-profile my-fast
-  auto-essay-typer essay.txt --profile my-fast
+  auto-text-typer essay.txt --preset sloppy --dry-run
+  auto-text-typer essay.txt --profile natural --set wpm=90 --set session_breaks=false
+  auto-text-typer essay.txt --preset natural --wpm 80 --save-profile my-fast
+  auto-text-typer essay.txt --profile my-fast
 
 management flags (no "file" argument needed):
-  auto-essay-typer --list-profiles
-  auto-essay-typer --show-profile --profile my-fast
-  auto-essay-typer --config-path
+  auto-text-typer --list-profiles
+  auto-text-typer --show-profile --profile my-fast
+  auto-text-typer --config-path
 """
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="auto-essay-typer",
+        # Must stay the console script pyproject.toml's [project.scripts]
+        # installs, since every example in _EPILOG is meant to be copy-pasted
+        # into a shell; tests/test_cli.py reads that name back out of the
+        # packaging metadata so the two cannot drift apart again.
+        prog="auto-text-typer",
         description="Type a text file into the focused application with human-like rhythm.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOG,

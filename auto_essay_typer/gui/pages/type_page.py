@@ -677,17 +677,45 @@ class TypePage(QWidget):
 
     def _preferred_profile_name(self, previous: str | None) -> str | None:
         """The profile to select after a reload: whatever was selected before if it
-        still exists, else "natural", else whichever profile sorts first."""
+        still exists, else the one saved from the last session, else "natural",
+        else whichever profile sorts first."""
         if previous in self._profiles:
             return previous
+        saved = self._settings_store.settings.profile_name
+        if saved in self._profiles:
+            return saved
         if "natural" in self._profiles:
             return "natural"
         names = sorted(self._profiles)
         return names[0] if names else None
 
     def _on_profile_changed(self, _index: int) -> None:
-        self._apply_profile(self.profile_combo.currentData())
+        name = self.profile_combo.currentData()
+        self._apply_profile(name)
+        self._remember_profile(name)
         self._schedule_estimate()
+
+    def _remember_profile(self, name: str | None) -> None:
+        """Save the chosen profile, so the next launch starts on it.
+
+        This page is the only one that writes ``profile_name``: its selector is
+        the one a run actually uses, so visiting the Advanced page to edit some
+        *other* profile must not quietly change what the next run types. That
+        page only reads the field, to decide which profile to open its editor on.
+
+        A choice that could not be saved still applies to this session, so the
+        combo stays where the user put it and they are told only that it will
+        not be remembered -- the same way ``_on_target_changed`` reports an
+        editor choice it could not save.
+        """
+        if name is None or name == self._settings_store.settings.profile_name:
+            return
+        try:
+            self._settings_store.update(profile_name=name)
+        except (ValueError, OSError) as exc:
+            self._show_inline_message(
+                f"Now using '{name}', but that choice couldn't be saved: {exc}"
+            )
 
     def _apply_profile(self, name: str | None) -> None:
         if name is None or name not in self._profiles:

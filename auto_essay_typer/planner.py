@@ -8,12 +8,19 @@ observed behaviour reproducible for debugging.
 ``plan_document`` extends the same idea to a formatted ``Document``: it reuses
 the exact same per-segment typing machinery as ``plan`` (via ``_type_segment``)
 for each run's text, and additionally emits ``Format`` actions to reproduce
-paragraph styles, alignment, lists, and character styles by pressing Google
-Docs keyboard shortcuts. ``simulator.simulate_document`` is the single source
-of truth for how those shortcuts behave; ``plan_document`` tracks the exact
-same state machine so a plan it builds is guaranteed to replay back to the
-document it was built from (see ``tests/test_document_pipeline.py`` and the
-project's Google Docs editing model).
+paragraph styles, alignment, lists, and character styles. Each of those
+actions carries an abstract ``FormatOp``, never a key combination: which chord
+presses it is the ``Driver``'s business, decided by the target editor's keymap,
+so the same plan serves whichever editor it ends up typed into. Fitting a
+document to a target that cannot express some of those ops is
+``keymaps.adapt_document``'s job, done before planning begins.
+
+``simulator.simulate_document`` is the single source of truth for how those
+ops behave; ``plan_document`` tracks the exact same state machine so a plan it
+builds is guaranteed to replay back to the document it was built from (see
+``tests/test_document_pipeline.py`` and the project's Google Docs editing
+model -- the editor that model was written from, and the reference the
+document format was designed against, rather than the only place it can go).
 """
 
 import random

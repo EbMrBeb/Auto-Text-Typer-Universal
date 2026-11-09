@@ -1,7 +1,11 @@
+import json
+
+import pytest
 from PySide6.QtCore import Qt
 
 from auto_essay_typer.gui.quick_settings import MISTAKE_STOPS
 from auto_essay_typer.gui.run_controller import RunController
+from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import ThemeManager
 from auto_essay_typer.gui.pages.type_page import TypePage
 from auto_essay_typer.platforms import PermissionStatus
@@ -93,6 +97,72 @@ def test_builtin_profiles_are_labelled(qtbot, qapp, recording_driver_factory):
     page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
     natural_index = page.profile_combo.findData("natural")
     assert "Built-in" in page.profile_combo.itemText(natural_index)
+
+
+# --- remembering the chosen profile -------------------------------------------------
+
+
+def _pick_profile(page, name: str) -> None:
+    page.profile_combo.setCurrentIndex(page.profile_combo.findData(name))
+
+
+def test_the_profile_combo_defaults_to_natural_with_no_saved_choice(type_page_rig):
+    assert type_page_rig().page.profile_combo.currentData() == "natural"
+
+
+def test_choosing_a_profile_saves_it(type_page_rig, tmp_path):
+    rig = type_page_rig()
+    saved = []
+    rig.store.changed.connect(saved.append)
+
+    _pick_profile(rig.page, "clean")
+
+    assert rig.store.settings.profile_name == "clean"
+    assert [settings.profile_name for settings in saved] == ["clean"]
+    on_disk = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["profile_name"] == "clean"
+
+
+def test_choosing_the_same_profile_again_saves_nothing(qtbot, type_page_rig):
+    rig = type_page_rig()
+    _pick_profile(rig.page, "sloppy")
+    with qtbot.assertNotEmitted(rig.store.changed):
+        _pick_profile(rig.page, "sloppy")
+
+
+@pytest.mark.parametrize("chosen", ["clean", "sloppy"])
+def test_the_combo_starts_on_the_profile_chosen_last_session(type_page_rig, tmp_path, chosen):
+    _pick_profile(type_page_rig().page, chosen)
+
+    # A page built over a fresh store reading the same file: the next launch.
+    next_launch = type_page_rig(store=SettingsStore(tmp_path / "settings.json")).page
+
+    assert next_launch.profile_combo.currentData() == chosen
+    # And the quick controls really were loaded from it, not just the label.
+    expected = PRESETS[chosen].typo_rate_per_100
+    assert next_launch.effective_profile().typo_rate_per_100 == expected
+
+
+def test_a_saved_profile_that_no_longer_exists_falls_back_to_natural(type_page_rig, tmp_path):
+    store = SettingsStore(tmp_path / "settings.json")
+    store.update(profile_name="deleted-long-ago")
+
+    assert type_page_rig(store=store).page.profile_combo.currentData() == "natural"
+
+
+def test_a_profile_choice_that_cannot_be_written_is_still_used_and_the_user_is_told(
+    type_page_rig, tmp_path
+):
+    unwritable = tmp_path / "settings-is-a-folder"
+    unwritable.mkdir()
+    rig = type_page_rig(store=SettingsStore(unwritable))
+
+    _pick_profile(rig.page, "clean")
+
+    assert rig.page.profile_combo.currentData() == "clean"
+    assert rig.page.effective_profile().typo_rate_per_100 == PRESETS["clean"].typo_rate_per_100
+    assert rig.page.inline_message_label.isHidden() is False
+    assert "couldn't be saved" in rig.page.inline_message_label.text()
 
 
 # --- empty text blocks Start / Preview ------------------------------------------------

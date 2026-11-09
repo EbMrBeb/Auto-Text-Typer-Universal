@@ -6,11 +6,17 @@ if this module is wrong, every correctness guarantee in the project is
 worthless. It ignores ``Format`` entirely: formatting shortcuts never change
 what characters are on screen, only how they look.
 
-``simulate_document()`` is the second referee, for the Google Docs editing
-feature: it is the single source of truth for how a blank Google Doc
-actually responds to keystrokes and formatting shortcuts (the project's
-"Google Docs editing model"), and ``planner.plan_document`` must track this
-exact same state machine so that a plan it builds is guaranteed reproducible.
+``simulate_document()`` is the second referee, for the formatted-document
+feature: it is the single source of truth for how a blank document actually
+responds to keystrokes and formatting commands, and
+``planner.plan_document`` must track this exact same state machine so that a
+plan it builds is guaranteed reproducible. It replays abstract ``FormatOp``s
+and never sees a keymap, so one model answers for every target editor: Google
+Docs is the editor whose behaviour that model was written from (the project's
+"Google Docs editing model") and the reference the document format was
+designed against, not the only editor it describes. Narrowing a document to
+what a given target can actually express happens earlier, in
+``keymaps.adapt_document``, not here.
 """
 
 from collections.abc import Iterable
