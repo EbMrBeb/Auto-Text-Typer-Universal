@@ -171,6 +171,46 @@ def test_navigation_registry_is_extensible(qtbot, qapp, tmp_path):
     assert window.page_stack.currentIndex() == 4
 
 
+def test_the_type_page_and_the_window_share_one_settings_store(qtbot, qapp, tmp_path):
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+    page = window.type_page
+
+    assert page._settings_store is window.settings_store
+
+    # A change through either side is the other's straight away. The editor the
+    # picker saves reaches the window, which builds every run's driver from it;
+    # and an editor chosen anywhere else moves the picker, without this page
+    # having to be shown again to catch up with the file.
+    saved = window.settings_store.settings.target_app
+    other = next(
+        page.target_combo.itemData(i)
+        for i in range(page.target_combo.count())
+        if page.target_combo.itemData(i) != saved
+    )
+    page.target_combo.setCurrentIndex(page.target_combo.findData(other))
+    assert window.settings_store.settings.target_app == other
+
+    window.settings_store.update(target_app=saved)
+    assert page.selected_target_id() == saved
+
+
+def test_an_editor_chosen_on_the_settings_page_reaches_the_type_page_at_once(qtbot, qapp, tmp_path):
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+    page = window.type_page
+    settings_page = window.page("settings")
+    chosen = next(
+        settings_page.target_combo.itemData(i)
+        for i in range(settings_page.target_combo.count())
+        if settings_page.target_combo.itemData(i) != page.selected_target_id()
+    )
+
+    settings_page.target_combo.setCurrentIndex(settings_page.target_combo.findData(chosen))
+
+    assert page.selected_target_id() == chosen
+
+
 def test_permission_chip_shows_ready_when_granted(qtbot, qapp, tmp_path):
     window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
     qtbot.addWidget(window)
