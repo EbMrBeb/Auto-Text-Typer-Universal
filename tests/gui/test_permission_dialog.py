@@ -80,6 +80,19 @@ def test_macos_calls_request_prompt_once_on_open(qtbot, qapp):
     assert calls == [1]
 
 
+def test_without_an_injected_prompt_the_platform_one_is_looked_up_when_the_dialog_opens(qtbot, qapp, monkeypatch):
+    # Looked up at that moment, not bound when the module loads, so a test can stand in for the OS
+    # prompt -- and one that forgets can no longer put the real one on a developer's screen.
+    from auto_essay_typer import platforms
+
+    calls = []
+    monkeypatch.setattr(platforms, "request_input_permission_prompt", lambda: calls.append(1) or True)
+
+    _dialog(qtbot, current_os=lambda: OperatingSystem.MACOS, request_prompt=None)
+
+    assert calls == [1]
+
+
 def test_non_macos_never_calls_request_prompt(qtbot, qapp):
     calls = []
     _dialog(

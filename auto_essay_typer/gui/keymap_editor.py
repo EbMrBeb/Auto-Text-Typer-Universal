@@ -265,6 +265,7 @@ class KeymapEditor(QWidget, ThemedMixin):
         picker.addWidget(self.target_combo, 1)
         self.restore_button = QPushButton("Restore defaults")
         self.restore_button.setObjectName("SecondaryButton")
+        self.restore_button.setAccessibleName("Restore default shortcuts")
         self.restore_button.setToolTip("Remove your custom shortcuts for this editor")
         self.restore_button.clicked.connect(self._on_restore_clicked)
         picker.addWidget(self.restore_button)

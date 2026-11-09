@@ -1,6 +1,7 @@
 from PySide6.QtCore import QSettings
 
 from auto_essay_typer.gui.main_window import MainWindow, NavPage
+from auto_essay_typer.gui.pages.advanced_page import AdvancedPage
 from auto_essay_typer.gui.pages.help_page import HelpPage
 from auto_essay_typer.gui.pages.settings_page import SettingsPage
 from auto_essay_typer.gui.pages.type_page import TypePage
@@ -44,13 +45,24 @@ def test_main_window_constructs_with_default_size_and_minimum(qtbot, qapp, tmp_p
     assert window.minimumHeight() == 600
 
 
-def test_main_window_registers_type_settings_help_by_default(qtbot, qapp, tmp_path):
+def test_main_window_registers_type_settings_advanced_help_in_that_order(qtbot, qapp, tmp_path):
     window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
     qtbot.addWidget(window)
-    assert [p.page_id for p in window._pages] == ["type", "settings", "help"]
+    assert [p.page_id for p in window._pages] == ["type", "settings", "advanced", "help"]
     assert isinstance(window.page_stack.widget(0), TypePage)
     assert isinstance(window.page_stack.widget(1), SettingsPage)
-    assert isinstance(window.page_stack.widget(2), HelpPage)
+    assert isinstance(window.page_stack.widget(3), HelpPage)
+
+
+def test_the_sidebar_lists_advanced_after_settings_and_before_help(qtbot, qapp, tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+    layout = window._nav_layout
+    buttons = [layout.itemAt(i).widget() for i in range(layout.count())]
+    labels = [b.text() for b in buttons if isinstance(b, QPushButton) and b.objectName() == "NavButton"]
+    assert labels == ["Type", "Settings", "Advanced", "Help"]
 
 
 def test_navigation_switches_the_visible_page(qtbot, qapp, tmp_path):
@@ -62,11 +74,89 @@ def test_navigation_switches_the_visible_page(qtbot, qapp, tmp_path):
     assert window.page_stack.currentIndex() == 1
     assert window.page_stack.currentWidget() is window.page_stack.widget(1)
 
-    window._nav_buttons["help"].click()
+    window._nav_buttons["advanced"].click()
     assert window.page_stack.currentIndex() == 2
+
+    window._nav_buttons["help"].click()
+    assert window.page_stack.currentIndex() == 3
 
     window._nav_buttons["type"].click()
     assert window.page_stack.currentIndex() == 0
+
+
+def test_the_advanced_page_is_reachable_through_navigation(qtbot, qapp, tmp_path):
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+
+    window._nav_buttons["advanced"].click()
+
+    assert isinstance(window.page_stack.currentWidget(), AdvancedPage)
+    assert window._nav_buttons["advanced"].isChecked()
+    assert window.page_stack.currentWidget().profile_combo.count() >= 3  # the built-in profiles
+
+
+def test_the_advanced_page_is_built_the_first_time_it_is_opened_and_only_once(qtbot, qapp, tmp_path, monkeypatch):
+    from auto_essay_typer.gui import main_window as main_window_module
+
+    built: list[AdvancedPage] = []
+
+    class CountingAdvancedPage(AdvancedPage):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(main_window_module, "AdvancedPage", CountingAdvancedPage)
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+
+    # Registered, with its place in the stack held by a placeholder -- but not built.
+    assert built == []
+    assert window.is_page_built("advanced") is False
+    assert window.page_stack.count() == 4
+    assert not isinstance(window.page_stack.widget(2), AdvancedPage)
+
+    window._nav_buttons["advanced"].click()
+    assert len(built) == 1
+    assert window.is_page_built("advanced") is True
+    assert window.page_stack.currentWidget() is built[0]
+    assert window.page_stack.count() == 4  # the placeholder was replaced, not stacked beside it
+
+    window._nav_buttons["help"].click()
+    window._nav_buttons["advanced"].click()
+    assert len(built) == 1
+    assert window.page_stack.currentWidget() is built[0]
+
+
+def test_ctrl_number_shortcuts_follow_the_sidebar_order(qtbot, qapp, tmp_path):
+    from PySide6.QtGui import QShortcut
+
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+    shortcuts = {s.key().toString(): s for s in window.findChildren(QShortcut)}
+    for sequence, expected in (("Ctrl+3", AdvancedPage), ("Ctrl+4", HelpPage), ("Ctrl+2", SettingsPage), ("Ctrl+1", TypePage)):
+        shortcuts[sequence].activated.emit()
+        assert isinstance(window.page_stack.currentWidget(), expected), sequence
+    assert "Advanced" in window._nav_buttons["advanced"].toolTip()
+
+
+def test_a_lazy_page_registered_later_is_also_built_on_first_use(qtbot, qapp, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    window = _make_window(qapp, tmp_path, permission_checker=_granted_status)
+    qtbot.addWidget(window)
+    built = []
+
+    def factory():
+        built.append(True)
+        return QLabel("later")
+
+    window.register_page(NavPage("later", "Later", "help", factory, lazy=True), index=1)
+    assert built == []
+    assert [p.page_id for p in window._pages] == ["type", "later", "settings", "advanced", "help"]
+    window.show_page("later")
+    assert built == [True]
+    assert window.page_stack.currentIndex() == 1
+    assert window.page("later") is window.page_stack.currentWidget()  # asking again builds nothing
 
 
 def test_navigation_registry_is_extensible(qtbot, qapp, tmp_path):
@@ -78,7 +168,7 @@ def test_navigation_registry_is_extensible(qtbot, qapp, tmp_path):
     window.register_page(NavPage("extra", "Extra", "help", lambda: QLabel("extra page")))
     assert "extra" in window._nav_buttons
     window._nav_buttons["extra"].click()
-    assert window.page_stack.currentIndex() == 3
+    assert window.page_stack.currentIndex() == 4
 
 
 def test_permission_chip_shows_ready_when_granted(qtbot, qapp, tmp_path):

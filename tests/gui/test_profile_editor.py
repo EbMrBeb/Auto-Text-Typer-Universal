@@ -15,7 +15,7 @@ from typing import get_args, get_origin, get_type_hints
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QSpinBox
+from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
 from auto_essay_typer import profiles
 from auto_essay_typer.gui import profile_editor
@@ -24,6 +24,7 @@ from auto_essay_typer.gui.advanced_common import (
     humanize_ms,
     humanize_ms_range,
 )
+from auto_essay_typer.gui.controls import ToggleSwitch
 from auto_essay_typer.gui.profile_editor import (
     ProfileEditor,
     RangeEdit,
@@ -126,7 +127,7 @@ def test_each_field_gets_the_right_kind_of_widget(qtbot):
             assert isinstance(widget.low, expected), name
             assert isinstance(widget.high, expected), name
         elif annotation is bool:
-            assert isinstance(widget, QCheckBox), name
+            assert isinstance(widget, ToggleSwitch), name  # the app's switch, not a look-alike checkbox
             assert widget.objectName() == "ToggleSwitch"
         elif annotation is int:
             assert isinstance(widget, QSpinBox), name
@@ -340,6 +341,19 @@ def test_a_boolean_field_toggles(qtbot):
     assert editor.is_dirty()
     box.setChecked(True)
     assert not editor.is_dirty()
+
+
+def test_a_boolean_field_is_a_switch_as_wide_as_its_track_not_its_whole_column(qtbot):
+    editor = _make_editor(qtbot)
+    editor.expand_all()
+    editor.resize(1000, 800)
+    editor.show()
+    qtbot.waitExposed(editor)
+
+    switch = editor.field_widgets["session_breaks"]
+
+    assert switch.width() <= switch.sizeHint().width()  # a stretched one would make empty space clickable
+    assert switch.parentWidget().width() > 2 * switch.width()  # and the column really is much wider
 
 
 # --- validation ------------------------------------------------------------------------------------------------

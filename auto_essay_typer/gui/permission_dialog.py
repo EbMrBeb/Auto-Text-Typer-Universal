@@ -19,11 +19,12 @@ from auto_essay_typer.gui.theme import Tokens
 from auto_essay_typer.platforms import OperatingSystem, PermissionStatus
 
 
-def _prettify(text: str) -> str:
+def prettify_dashes(text: str) -> str:
     """Typographic dashes for text written in ASCII.
 
     ``platforms.py`` words its permission steps for a terminal as well as for
-    this dialog, so a spaced ``--`` stays there and becomes a real em dash here.
+    a window, so a spaced ``--`` stays there and becomes a real em dash on screen.
+    Use this for any of that text shown in the GUI (this dialog, the onboarding step).
     """
     return text.replace(" -- ", " — ")
 
@@ -45,7 +46,7 @@ class PermissionDialog(QDialog):
         tokens: Tokens,
         *,
         permission_checker: Callable[[], PermissionStatus] = platforms.check_input_permission,
-        request_prompt: Callable[[], bool] = platforms.request_input_permission_prompt,
+        request_prompt: Callable[[], bool] | None = None,
         open_settings: Callable[[], bool] = platforms.open_permission_settings,
         current_os: Callable[[], OperatingSystem] = platforms.current_os,
         parent: QWidget | None = None,
@@ -68,7 +69,7 @@ class PermissionDialog(QDialog):
         title.setWordWrap(True)
         layout.addWidget(title)
 
-        self._summary_label = QLabel(_prettify(status.summary))
+        self._summary_label = QLabel(prettify_dashes(status.summary))
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
@@ -118,13 +119,14 @@ class PermissionDialog(QDialog):
         layout.addLayout(button_row)
 
         if current_os() == OperatingSystem.MACOS:
-            request_prompt()
+            # Looked up now rather than bound as a default, so a test can stand in for the OS prompt.
+            (request_prompt or platforms.request_input_permission_prompt)()
 
     @staticmethod
     def _format_steps(steps: tuple[str, ...]) -> str:
         if not steps:
             return ""
-        items = "".join(f"<li style='margin-bottom:4px;'>{html.escape(_prettify(step))}</li>" for step in steps)
+        items = "".join(f"<li style='margin-bottom:4px;'>{html.escape(prettify_dashes(step))}</li>" for step in steps)
         return f"<ol style='margin:0; padding-left:18px;'>{items}</ol>"
 
     def granted(self) -> bool:

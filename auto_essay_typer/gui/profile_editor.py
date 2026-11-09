@@ -43,6 +43,7 @@ from auto_essay_typer.gui.advanced_common import (
     humanize_ms_range,
     spinbox_stylesheet,
 )
+from auto_essay_typer.gui.controls import ToggleSwitch
 from auto_essay_typer.gui.theme import ThemeManager
 from auto_essay_typer.gui.widgets import CollapsibleSection
 from auto_essay_typer.profiles import FieldInfo, Profile
@@ -301,7 +302,12 @@ class FieldRow(QWidget):
         right_layout.setSpacing(4)
         self.control = self._build_control()
         self.control.setToolTip(info.help)
-        right_layout.addWidget(self.control)
+        if spec.kind == KIND_BOOL:
+            # A switch is only as wide as its track: left-aligned in the column, not stretched
+            # across it (which would make the empty space beside it a click target).
+            right_layout.addWidget(self.control, 0, Qt.AlignmentFlag.AlignLeft)
+        else:
+            right_layout.addWidget(self.control)
         self.hint_label = QLabel()
         self.hint_label.setObjectName("MutedLabel")
         self.hint_label.setWordWrap(True)
@@ -320,8 +326,9 @@ class FieldRow(QWidget):
     def _build_control(self) -> QWidget:
         spec, label = self.spec, self.spec.info.label
         if spec.kind == KIND_BOOL:
-            box = QCheckBox()
-            box.setObjectName("ToggleSwitch")
+            # The same on/off switch the Type and Settings pages use (it was a plain checkbox
+            # that merely carried that switch's object name).
+            box = ToggleSwitch()
             box.setAccessibleName(label)
             box.toggled.connect(self._on_toggled)
             self.check_box = box

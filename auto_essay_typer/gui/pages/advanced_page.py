@@ -196,19 +196,23 @@ class AdvancedPage(QWidget, ThemedMixin):
         buttons.setSpacing(8)
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("PrimaryButton")
+        self.save_button.setAccessibleName("Save profile")
         self.save_button.clicked.connect(self._on_save)
         buttons.addWidget(self.save_button)
         self.save_as_button = QPushButton("Save as…")
         self.save_as_button.setObjectName("SecondaryButton")
+        self.save_as_button.setAccessibleName("Save profile as a new profile")
         self.save_as_button.clicked.connect(self._on_save_as)
         buttons.addWidget(self.save_as_button)
         self.delete_button = QPushButton("Delete")
         self.delete_button.setObjectName("DestructiveButton")
+        self.delete_button.setAccessibleName("Delete profile")
         self.delete_button.clicked.connect(self._on_delete)
         buttons.addWidget(self.delete_button)
         buttons.addStretch(1)
         self.reset_button = QPushButton("Reset to defaults")
         self.reset_button.setObjectName("SecondaryButton")
+        self.reset_button.setAccessibleName("Reset profile fields to defaults")
         self.reset_button.setToolTip(
             "Put every field back to this profile's built-in values (or the standard "
             "defaults for a profile of your own). Nothing is saved until you press Save."
@@ -230,6 +234,10 @@ class AdvancedPage(QWidget, ThemedMixin):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        # Not a tab stop, like the Type page's: it holds dozens of controls that are, and Qt
+        # scrolls a control into view when it takes focus. A tab stop of its own would draw no
+        # focus ring (only the Help page's "PageScroll" has the stylesheet rule for one).
+        self.scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Always on (and invisible until there is something to scroll) so the
         # column width never jumps when a group is folded or unfolded.
@@ -262,9 +270,11 @@ class AdvancedPage(QWidget, ThemedMixin):
         layout.addWidget(label)
         layout.addStretch(1)
         self.expand_all_button = LinkButton("Expand all", theme_manager=theme_manager)
+        self.expand_all_button.setAccessibleName("Expand all groups")
         self.expand_all_button.clicked.connect(self.editor.expand_all)
         layout.addWidget(self.expand_all_button)
         self.collapse_all_button = LinkButton("Collapse all", theme_manager=theme_manager)
+        self.collapse_all_button.setAccessibleName("Collapse all groups")
         self.collapse_all_button.clicked.connect(self.editor.collapse_all)
         layout.addWidget(self.collapse_all_button)
         return heading
@@ -281,6 +291,7 @@ class AdvancedPage(QWidget, ThemedMixin):
         link_row = QHBoxLayout()
         link_row.setContentsMargins(4, 0, 4, 0)
         self.locations_button = LinkButton("Show file locations", theme_manager=theme_manager)
+        self.locations_button.setAccessibleName("Show file locations")
         self.locations_button.clicked.connect(self._toggle_locations)
         link_row.addWidget(self.locations_button, 0, Qt.AlignmentFlag.AlignLeft)
         link_row.addStretch(1)
@@ -326,6 +337,7 @@ class AdvancedPage(QWidget, ThemedMixin):
         row.addWidget(edit, 1)
         button = QPushButton("Open folder")
         button.setObjectName("SecondaryButton")
+        button.setAccessibleName(f"Open the {title.lower()} folder")
         row.addWidget(button)
         layout.addLayout(row)
         return edit, button
@@ -656,7 +668,9 @@ class AdvancedPage(QWidget, ThemedMixin):
             self.profiles_path_edit.setText(str(config.config_path()))
             self.settings_path_edit.setText(str(app_settings.settings_path()))
         self.locations_panel.setVisible(reveal)
-        self.locations_button.setText("Hide file locations" if reveal else "Show file locations")
+        label = "Hide file locations" if reveal else "Show file locations"
+        self.locations_button.setText(label)
+        self.locations_button.setAccessibleName(label)
 
     # -- theming ------------------------------------------------------------------------------------------------------------------------------------
 

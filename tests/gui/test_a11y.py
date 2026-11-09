@@ -17,16 +17,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from auto_essay_typer.driver import Driver
 from auto_essay_typer.gui import a11y
 from auto_essay_typer.gui.a11y import RunAnnouncer, announce, spoken_duration
 from auto_essay_typer.gui.main_window import MainWindow
 from auto_essay_typer.gui.mini_window import MiniProgressWindow
+from auto_essay_typer.gui.onboarding import OnboardingDialog
+from auto_essay_typer.gui.pages.advanced_page import AdvancedPage
 from auto_essay_typer.gui.pages.help_page import HelpPage
 from auto_essay_typer.gui.pages.settings_page import SettingsPage
 from auto_essay_typer.gui.pages.type_page import TypePage
 from auto_essay_typer.gui.permission_dialog import PermissionDialog
 from auto_essay_typer.gui.preview_dialog import PreviewDialog
 from auto_essay_typer.gui.run_controller import RunController
+from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import LIGHT_TOKENS, ThemeManager
 from auto_essay_typer.planner import plan
 from auto_essay_typer.platforms import OperatingSystem, PermissionStatus
@@ -247,9 +251,27 @@ def test_every_control_on_the_type_page_has_an_accessible_name(qtbot, qapp, tmp_
 
 
 def test_every_control_on_the_settings_page_has_an_accessible_name(qtbot, qapp, tmp_path):
-    page = SettingsPage(ThemeManager(qapp), lambda: True, lambda _v: None)
+    page = SettingsPage(ThemeManager(qapp), SettingsStore(tmp_path / "settings.json"))
     qtbot.addWidget(page)
     assert _unnamed(page) == []
+
+
+def test_every_control_on_the_advanced_page_has_an_accessible_name(qtbot, qapp, tmp_path):
+    window = _window(qtbot, qapp, tmp_path)
+    page = window.page("advanced")
+    assert isinstance(page, AdvancedPage)
+    assert _unnamed(page) == []
+
+
+def test_every_control_in_the_onboarding_dialog_has_an_accessible_name(qtbot, qapp, tmp_path):
+    dialog = OnboardingDialog(
+        ThemeManager(qapp),
+        SettingsStore(tmp_path / "settings.json"),
+        permission_checker=lambda: _GRANTED,
+        driver_factory=lambda keyboard: Driver(keyboard=keyboard, sleep=lambda _s: None, countdown_seconds=0),
+    )
+    qtbot.addWidget(dialog)
+    assert _unnamed(dialog) == []
 
 
 def test_the_help_pages_scroll_area_has_an_accessible_name(qtbot, qapp):

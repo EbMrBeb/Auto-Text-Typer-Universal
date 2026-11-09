@@ -1,18 +1,25 @@
 """Suite-wide fixtures.
 
-The two here keep the shared pynput ``Controller`` (``driver.preload_keyboard_backend``)
-from ever being a real one in a test:
+These keep pynput from ever being real in a test:
 
-* ``_isolated_keyboard_backend`` (autouse) gives every test an empty cache and makes
-  building a real ``Controller`` impossible.
+* ``_isolated_keyboard_backend`` (autouse) gives every test an empty cache for the shared
+  ``Controller`` (``driver.preload_keyboard_backend``) and makes building a real one impossible.
 * ``fake_pynput`` swaps ``pynput.keyboard.Controller`` for a recording fake, for
   the tests that exercise the cache, the thread guard and the default-keyboard
   paths without typing anything or touching macOS.
+* ``_no_real_hotkey_listener`` (autouse) makes starting a real global hotkey listener
+  impossible, and fails the test that tries.
+
+And these keep the Qt tests from crashing the process: ``_only_the_main_thread_collects_garbage``
+and ``_collect_garbage_after_each_test`` (both autouse), explained on the first. The second also
+deletes the widgets ``qtbot`` closed, which is what keeps the GUI suite fast.
 """
 
 from __future__ import annotations
 
 import contextlib
+import gc
+import sys
 import threading
 from collections.abc import Iterator
 
@@ -51,6 +58,84 @@ def _isolated_keyboard_backend(monkeypatch):
     monkeypatch.setattr(driver, "_shared_controller", None)
     if _pynput_keyboard is not None:
         monkeypatch.setattr(_pynput_keyboard, "Controller", _NoRealController)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _only_the_main_thread_collects_garbage():
+    """Keep Python's cycle collector off the worker threads, for the whole session.
+
+    The collector runs on whichever thread happens to allocate when its threshold is
+    crossed, and a typing run's worker thread allocates a lot. If it finds a Qt widget
+    in a cycle (a page or dialog an earlier test abandoned) it destroys that widget *on
+    the worker thread*; Qt then sends events through the application's Python event
+    filter from the wrong thread and PySide segfaults inside its trampoline, taking the
+    whole test process with it -- at a random moment, in a random test. Automatic
+    collection is therefore off, and ``_collect_garbage_after_each_test`` collects on the
+    main thread instead, where those objects belong.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if was_enabled:
+        gc.enable()
+
+
+def _delete_what_qt_was_asked_to_delete_later() -> None:
+    """Run the ``deleteLater()`` calls that are still queued, on this (the main) thread.
+
+    ``qtbot`` closes each registered widget and calls ``deleteLater()`` on it, but Qt only acts on
+    that when an event loop gets round to it, and nothing in a test run does. Without this, every
+    window a test opened stays alive until some later test happens to wait for a signal -- hundreds
+    of widgets per window -- and every ``ThemeManager.apply()`` has to restyle all of them, which
+    made the theme tests take 15 seconds each instead of a fraction of one.
+    """
+    qtcore = sys.modules.get("PySide6.QtCore")
+    if qtcore is None or qtcore.QCoreApplication.instance() is None:
+        return  # no Qt in this test run: nothing was queued
+    qtcore.QCoreApplication.sendPostedEvents(None, qtcore.QEvent.Type.DeferredDelete.value)
+
+
+@pytest.fixture(autouse=True)
+def _collect_garbage_after_each_test():
+    """Free the test's widgets and collect its cycles now, on the main thread (see the session fixture above).
+
+    Function-scoped autouse fixtures are set up first and torn down last, so this runs
+    after ``qtbot`` has closed the test's widgets.
+    """
+    yield
+    _delete_what_qt_was_asked_to_delete_later()
+    gc.collect()
+    _delete_what_qt_was_asked_to_delete_later()  # anything the collection itself asked to have deleted
+
+
+@pytest.fixture(autouse=True)
+def _no_real_hotkey_listener(monkeypatch):
+    """Make it impossible for a test to start a real global hotkey listener, and fail it if one tries.
+
+    A real ``GlobalHotKeys`` captures every key the developer types, system-wide, and on macOS
+    (without the main-thread handling in ``gui/hotkeys.py``) kills the process outright. The app
+    starts one at launch, so any test that builds the window and starts the shell without
+    injecting a fake hotkey backend would install a real one. *Constructing* a listener is
+    harmless (a few tests do, to check it parses its hotkeys) -- it is ``start()`` that listens.
+
+    The attempt is recorded and the listener's ``start`` raises, which the hotkey service
+    treats as "hotkeys unavailable", so the test would otherwise carry on and pass quietly;
+    the assertion at teardown is what makes it fail.
+    """
+    attempts: list[str] = []
+    try:
+        from pynput._util import AbstractListener
+    except ImportError:  # pynput unusable here: nothing real can be started either
+        yield attempts
+        return
+
+    def refuse(self, *args, **kwargs):
+        attempts.append(type(self).__name__)
+        raise RuntimeError("tests may not start a real global hotkey listener")
+
+    monkeypatch.setattr(AbstractListener, "start", refuse)
+    yield attempts
+    assert attempts == [], f"a test started a real global hotkey listener: {attempts}; inject a fake backend"
 
 
 class FakeController:
