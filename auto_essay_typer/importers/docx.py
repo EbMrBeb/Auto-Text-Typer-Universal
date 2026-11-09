@@ -14,6 +14,16 @@ paragraph-default formatting), because that is exactly the set of styles a
 person could reproduce by pressing Google Docs shortcuts while typing --
 there is no "current paragraph's default run style" concept to press a
 shortcut for.
+
+Deliberately *wide* in what it reads as text, because the opposite mistake is
+worse: a word Word shows on screen but this parser skips leaves the user with
+a silently incomplete essay. So the walk descends through everything that
+wraps text without being text -- hyperlinks, content controls, smart tags,
+fields -- and resolves tracked changes to the view Word shows, accepting
+insertions and leaving deletions out. What it cannot turn into keystrokes
+(a picture, a shape's text, a footnote marker, a symbol-font character) is
+counted and named in the warnings this module returns, never dropped in
+silence.
 """
 
 from __future__ import annotations
@@ -36,11 +46,17 @@ from auto_essay_typer.document import (
 )
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 
 
 def _w(tag: str) -> str:
     """Qualify a bare tag name (``"p"``) with the WordprocessingML namespace."""
     return f"{{{_W_NS}}}{tag}"
+
+
+def _mc(tag: str) -> str:
+    """Qualify a bare tag name with the markup-compatibility namespace."""
+    return f"{{{_MC_NS}}}{tag}"
 
 
 _DOCUMENT_XML = "word/document.xml"
@@ -187,6 +203,65 @@ def _run_styles(rpr: ET.Element | None) -> frozenset[TextStyle]:
 
 
 @dataclass
+class _ParseState:
+    """Everything the walk accumulates besides the paragraphs themselves.
+
+    ``warnings`` counts the losses a number is enough for. The other two are
+    the losses a number is not enough for: whether the document carried
+    tracked changes at all (the user needs to know a choice was made for
+    them), and enough of each text box's words that they can tell which part
+    of their document will be missing.
+    """
+
+    warnings: Counter[str] = field(default_factory=Counter)
+    tracked_changes: bool = False
+    text_box_excerpts: list[str] = field(default_factory=list)
+
+
+#: Wherever a run breaks the line, its text comes back carrying this instead,
+#: for the paragraph builder to split on.
+_BREAK = "\x00BR\x00"
+
+#: Elements that wrap runs without contributing text of their own: their runs
+#: belong in the paragraph exactly as if the wrapper were not there. A smart
+#: tag is Word's automatic tagging of a name, date or place; ``bdo``/``dir``
+#: are right-to-left overrides around otherwise ordinary runs; ``fldSimple``
+#: is one of them because a field's child runs hold the result Word displays
+#: (the page number, a cross-reference's text), while the instruction that
+#: produced it lives in an attribute this parser never reads.
+_TRANSPARENT_RUN_WRAPPERS = frozenset(
+    {_w("smartTag"), _w("fldSimple"), _w("bdo"), _w("dir"), _w("customXml")}
+)
+
+#: Tracked-change wrappers whose text Word *does* show in its final view -- an
+#: insertion nobody has accepted yet, and the place a moved passage landed.
+_ACCEPTED_REVISIONS = frozenset({_w("ins"), _w("moveTo")})
+
+#: And the ones whose text it does not: a deletion, and the place a moved
+#: passage came from.
+_REJECTED_REVISIONS = frozenset({_w("del"), _w("moveFrom")})
+
+#: Revision marks Word records on the paragraph mark itself rather than on any
+#: run, which is how it remembers a paragraph someone split or merged.
+_PARAGRAPH_MARK_REVISIONS = ("ins", "del", "moveTo", "moveFrom")
+
+#: Pictures and shapes. Each is reported rather than typed -- but a shape can
+#: have text trapped inside it, which is a different loss from a photograph
+#: (see :func:`_record_graphic`).
+_GRAPHIC_TAGS = frozenset({_w("drawing"), _w("pict"), _w("object"), _mc("AlternateContent")})
+
+#: The markers Word leaves where a footnote, endnote or comment is anchored.
+#: Each is a number the reader sees, with nothing in the body text to type in
+#: its place.
+_NOTE_REFERENCE_TAGS = frozenset(
+    {_w("footnoteReference"), _w("endnoteReference"), _w("commentReference")}
+)
+
+#: How much of a text box's wording goes in the warning about it.
+_TEXT_BOX_EXCERPT_CHARS = 60
+
+
+@dataclass
 class _OpenParagraph:
     """A ``Paragraph`` under construction: runs are still (text, styles) pairs."""
 
@@ -206,7 +281,7 @@ class _OpenParagraph:
             self.pieces.append((text, styles))
 
     def clone_empty(self) -> "_OpenParagraph":
-        """A fresh paragraph continuing this one's attributes (for a ``w:br`` split)."""
+        """A fresh paragraph continuing this one's attributes (for a line break)."""
         return _OpenParagraph(
             style=self.style,
             alignment=self.alignment,
@@ -225,44 +300,140 @@ class _OpenParagraph:
         )
 
 
-def _run_text_pieces(run_el: ET.Element, warnings: Counter[str]) -> tuple[str, list[str]]:
-    """Text contributed by one ``w:r``, plus any ``"br"`` split markers it contains.
+def _element_text(el: ET.Element) -> str:
+    """Every ``w:t`` under ``el``, joined by single spaces.
 
-    A single run can hold more than one meaningful child (``w:t``, ``w:tab``,
-    ``w:br``) in document order, so this returns the run's text with a
-    sentinel ``"\\x00BR\\x00"`` wherever a ``w:br`` occurred, for the caller to
-    split on -- keeping this function ignorant of paragraph-level state.
+    Used only to quote something in a warning, so paragraph and run
+    boundaries inside it are deliberately flattened to spaces rather than
+    preserved.
+    """
+    parts = (t.text or "" for t in el.iter(_w("t")))
+    return " ".join(part for part in (raw.strip() for raw in parts) if part)
+
+
+def _excerpt(text: str) -> str:
+    """``text`` cut down to something short enough to sit in a warning line."""
+    if len(text) <= _TEXT_BOX_EXCERPT_CHARS:
+        return text
+    return text[:_TEXT_BOX_EXCERPT_CHARS].rstrip() + "…"
+
+
+def _record_graphic(el: ET.Element, state: _ParseState) -> None:
+    """Note one picture or shape as a loss, naming any text trapped inside it.
+
+    Text in a shape sits beside the body rather than in it, and typing cannot
+    put it back there, so it is reported with enough of its wording to
+    recognize instead of being typed into the middle of the essay. A picture
+    with no text in it is just an image.
+
+    ``mc:AlternateContent`` holds the same shape twice -- a modern description
+    and a fallback for older versions of Word -- so only its first non-empty
+    branch is read, or one text box would be reported as two.
+    """
+    if el.tag == _mc("AlternateContent"):
+        for branch in el:
+            if len(branch):
+                _record_graphic(branch, state)
+                return
+        state.warnings["image"] += 1
+        return
+
+    text_boxes = el.findall(f".//{_w('txbxContent')}")
+    if not text_boxes:
+        state.warnings["image"] += 1
+        return
+    for text_box in text_boxes:
+        state.text_box_excerpts.append(_excerpt(_element_text(text_box)))
+
+
+def _run_text(run_el: ET.Element, state: _ParseState) -> str:
+    """The text one ``w:r`` contributes, with ``_BREAK`` where it breaks a line.
+
+    A single run can hold several meaningful children (``w:t``, ``w:tab``,
+    ``w:br``) in document order, so line breaks come back as a sentinel for
+    the caller to split on -- keeping this function ignorant of
+    paragraph-level state. Everything it cannot turn into characters is
+    counted, so no run child is skipped without the user hearing about it.
     """
     parts: list[str] = []
     for child in run_el:
         tag = child.tag
         if tag == _w("t"):
             parts.append(child.text or "")
-        elif tag == _w("tab"):
+        elif tag == _w("delText"):
+            # Deleted text, with or without a w:del around the run: Word's
+            # final view does not show it.
+            state.tracked_changes = True
+        elif tag in (_w("tab"), _w("ptab")):
             parts.append("\t")
-        elif tag == _w("br"):
-            parts.append("\x00BR\x00")
-        elif tag in (_w("drawing"), _w("pict")):
-            warnings["image"] += 1
-    return "".join(parts), []
+        elif tag in (_w("br"), _w("cr")):
+            parts.append(_BREAK)
+        elif tag == _w("noBreakHyphen"):
+            parts.append("\u2011")  # non-breaking hyphen: a hyphen to read
+        elif tag == _w("softHyphen"):
+            # Optional hyphen. Invisible unless the word happens to land on a
+            # line end, but still a character of the source, so it is typed
+            # rather than quietly thrown away.
+            parts.append("\u00ad")
+        elif tag in _GRAPHIC_TAGS:
+            _record_graphic(child, state)
+        elif tag == _w("sym"):
+            # A character from a specific symbol font, addressed by a code
+            # point that means nothing outside it -- there is no keystroke
+            # that reproduces it.
+            state.warnings["symbol"] += 1
+        elif tag in _NOTE_REFERENCE_TAGS:
+            state.warnings["note"] += 1
+    return "".join(parts)
 
 
-def _iter_runs(container: ET.Element, warnings: Counter[str]):
-    """Yield ``(run_element, inside_hyperlink)`` for every ``w:r`` in a paragraph,
-    unwrapping exactly one level of ``w:hyperlink`` and counting each such link."""
+def _iter_runs(container: ET.Element, state: _ParseState):
+    """Yield every ``w:r`` whose text belongs in this paragraph, in order.
+
+    Descends through the elements that wrap runs without text of their own --
+    hyperlinks, content controls, smart tags, fields -- so their text is
+    typed rather than dropped, and resolves tracked changes to the final view
+    Word shows on screen: an insertion's runs are yielded, a deletion's are
+    not.
+    """
     for child in container:
-        if child.tag == _w("r"):
-            yield child, False
-        elif child.tag == _w("hyperlink"):
-            warnings["link"] += 1
-            for grandchild in child:
-                if grandchild.tag == _w("r"):
-                    yield grandchild, True
+        tag = child.tag
+        if tag == _w("r"):
+            yield child
+        elif tag == _w("hyperlink"):
+            state.warnings["link"] += 1
+            yield from _iter_runs(child, state)
+        elif tag in _ACCEPTED_REVISIONS:
+            state.tracked_changes = True
+            yield from _iter_runs(child, state)
+        elif tag in _REJECTED_REVISIONS:
+            state.tracked_changes = True
+        elif tag == _w("sdt"):
+            content = child.find(_w("sdtContent"))
+            if content is not None:
+                yield from _iter_runs(content, state)
+        elif tag in _TRANSPARENT_RUN_WRAPPERS:
+            yield from _iter_runs(child, state)
+
+
+def _paragraph_mark_revised(ppr: ET.Element | None) -> bool:
+    """Whether the paragraph *mark* itself was inserted or deleted by an editor.
+
+    Word records a split or merged paragraph here rather than on any run, so a
+    document whose only tracked change is one of those would otherwise look
+    as though it had never been edited.
+    """
+    if ppr is None:
+        return False
+    rpr = ppr.find(_w("rPr"))
+    if rpr is None:
+        return False
+    return any(rpr.find(_w(tag)) is not None for tag in _PARAGRAPH_MARK_REVISIONS)
 
 
 def _parse_paragraph(p_el: ET.Element, names: dict[str, str], numbering: _NumberingSchemes,
-                      warnings: Counter[str]) -> list[Paragraph]:
-    """One ``w:p`` -> one or more ``Paragraph`` (more than one iff it holds a ``w:br``)."""
+                      state: _ParseState) -> list[Paragraph]:
+    """One ``w:p`` -> one or more ``Paragraph`` (more than one iff it breaks a line)."""
     ppr = p_el.find(_w("pPr"))
     style_id = None
     alignment = Alignment.LEFT
@@ -289,54 +460,95 @@ def _parse_paragraph(p_el: ET.Element, names: dict[str, str], numbering: _Number
                 list_kind = numbering.list_kind_for(num_id, level)
                 list_level = level
 
+    if _paragraph_mark_revised(ppr):
+        state.tracked_changes = True
+
     style = _resolve_paragraph_style(style_id, names)
     current = _OpenParagraph(style=style, alignment=alignment, list_kind=list_kind,
                               list_level=list_level)
     finished: list[Paragraph] = []
-    had_break = False
 
-    for run_el, _in_link in _iter_runs(p_el, warnings):
-        rpr = run_el.find(_w("rPr"))
-        styles = _run_styles(rpr)
-        text, _unused = _run_text_pieces(run_el, warnings)
-        for segment in text.split("\x00BR\x00"):
-            if had_break:
+    for run_el in _iter_runs(p_el, state):
+        styles = _run_styles(run_el.find(_w("rPr")))
+        # One segment per piece of the run between its line breaks: every
+        # boundary between two segments is a break, whether it fell inside
+        # this run or between this run and the one before it.
+        for index, segment in enumerate(_run_text(run_el, state).split(_BREAK)):
+            if index:
+                state.warnings["break"] += 1
                 finished.append(current.to_paragraph())
                 current = current.clone_empty()
             current.append(segment, styles)
-            had_break = False
-        # A run's split markers are consumed one at a time above; count the
-        # actual number of breaks that occurred so the *next* segment (if
-        # any, even in a later run) starts a fresh paragraph.
-        break_count = text.count("\x00BR\x00")
-        if break_count:
-            warnings["break"] += break_count
-            had_break = True
 
     finished.append(current.to_paragraph())
     return finished
 
 
+def _iter_cells(container: ET.Element):
+    """Yield every ``w:tc`` of one table in reading order.
+
+    Descends through rows, and through any content control wrapped around a
+    run of them, so no cell is missed because an editable region was put
+    around its row.
+    """
+    for child in container:
+        tag = child.tag
+        if tag == _w("tc"):
+            yield child
+        elif tag == _w("tr"):
+            yield from _iter_cells(child)
+        elif tag == _w("sdt"):
+            content = child.find(_w("sdtContent"))
+            if content is not None:
+                yield from _iter_cells(content)
+        elif tag == _w("customXml"):
+            yield from _iter_cells(child)
+
+
 def _flatten_table(tbl_el: ET.Element, names: dict[str, str], numbering: _NumberingSchemes,
-                    warnings: Counter[str]) -> list[Paragraph]:
-    """One paragraph per cell, reading order -- table structure itself is dropped."""
-    warnings["table"] += 1
-    cell_paragraphs: list[Paragraph] = []
-    for row in tbl_el.findall(_w("tr")):
-        for cell in row.findall(_w("tc")):
-            pieces: list[tuple[str, frozenset[TextStyle]]] = []
-            for p_el in cell.findall(_w("p")):
-                for paragraph in _parse_paragraph(p_el, names, numbering, warnings):
-                    for run in paragraph.runs:
-                        pieces.append((run.text, run.styles))
-            merged: list[Run] = []
-            for text, styles in pieces:
-                if merged and merged[-1].styles == styles:
-                    merged[-1] = Run(merged[-1].text + text, styles)
-                elif text:
-                    merged.append(Run(text, styles))
-            cell_paragraphs.append(Paragraph(runs=tuple(merged)))
-    return cell_paragraphs
+                    state: _ParseState) -> list[Paragraph]:
+    """Every cell's paragraphs in reading order -- the grid itself is dropped.
+
+    A cell's own paragraphs stay separate paragraphs. Running them together
+    would fuse the last word of one onto the first word of the next and
+    invent a word that is in no document, which is the one thing a flattened
+    table must not do.
+    """
+    state.warnings["table"] += 1
+    paragraphs: list[Paragraph] = []
+    for cell in _iter_cells(tbl_el):
+        cell_paragraphs = _parse_block_content(cell, names, numbering, state)
+        # Word always puts a paragraph in a cell, but an empty cell still
+        # stands for a line the reader sees.
+        paragraphs.extend(cell_paragraphs or [Paragraph()])
+    return paragraphs
+
+
+def _parse_block_content(container: ET.Element, names: dict[str, str],
+                          numbering: _NumberingSchemes,
+                          state: _ParseState) -> list[Paragraph]:
+    """Every paragraph of one block container, in reading order.
+
+    The container is the body, a table cell, or the contents of a content
+    control. Recursive because a content control can hold whole paragraphs
+    and tables, and a cell can hold another table: without descending into
+    them their text would be absent from the Document with nothing said
+    about it.
+    """
+    paragraphs: list[Paragraph] = []
+    for child in container:
+        tag = child.tag
+        if tag == _w("p"):
+            paragraphs.extend(_parse_paragraph(child, names, numbering, state))
+        elif tag == _w("tbl"):
+            paragraphs.extend(_flatten_table(child, names, numbering, state))
+        elif tag == _w("sdt"):
+            content = child.find(_w("sdtContent"))
+            if content is not None:
+                paragraphs.extend(_parse_block_content(content, names, numbering, state))
+        elif tag == _w("customXml"):
+            paragraphs.extend(_parse_block_content(child, names, numbering, state))
+    return paragraphs
 
 
 def _find(root: ET.Element, path: str) -> ET.Element:
@@ -397,35 +609,64 @@ def parse_docx(data: bytes) -> tuple[Document, tuple[str, ...]]:
 
     names = _parse_styles(styles_root)
     numbering = _parse_numbering(numbering_root)
-    warnings: Counter[str] = Counter()
+    state = _ParseState()
 
     body = _find(document_root, "body")
-    paragraphs: list[Paragraph] = []
-    for child in body:
-        if child.tag == _w("p"):
-            paragraphs.extend(_parse_paragraph(child, names, numbering, warnings))
-        elif child.tag == _w("tbl"):
-            paragraphs.extend(_flatten_table(child, names, numbering, warnings))
+    paragraphs = _parse_block_content(body, names, numbering, state)
+    warnings = _render_warnings(state.warnings) + _render_detail_warnings(state)
 
-    return Document(tuple(paragraphs)), _render_warnings(warnings)
+    return Document(tuple(paragraphs)), warnings
+
+
+def _text_box_message(excerpts: list[str]) -> str:
+    """Name the text boxes whose content is missing, quoting each one.
+
+    The quoted words are the point of the message: "a text box will not be
+    reproduced" on its own leaves the user hunting through their document for
+    which part of it is gone.
+    """
+    noun = (
+        "1 text box's content"
+        if len(excerpts) == 1
+        else f"{len(excerpts)} text boxes' content"
+    )
+    quoted = ", ".join(f'"{excerpt}"' for excerpt in excerpts if excerpt)
+    if not quoted:
+        return f"{noun} will not be reproduced"
+    return f"{noun} will not be reproduced: {quoted}"
 
 
 def _render_warnings(counts: Counter[str]) -> tuple[str, ...]:
+    """The losses a count is enough to describe, one message per kind."""
     messages: list[str] = []
-    if counts["link"]:
-        n = counts["link"]
-        messages.append(f"{n} link{'s' if n != 1 else ''} typed as plain text")
-    if counts["image"]:
-        n = counts["image"]
-        messages.append(f"{n} image{'s' if n != 1 else ''} not reproduced (dropped)")
-    if counts["table"]:
-        n = counts["table"]
+
+    def add(count: int, template: str) -> None:
+        if count:
+            messages.append(template.format(n=count, s="" if count == 1 else "s"))
+
+    add(counts["link"], "{n} link{s} typed as plain text")
+    add(counts["image"], "{n} image{s} not reproduced (dropped)")
+    add(counts["table"], "{n} table{s} flattened to one paragraph per cell")
+    add(counts["break"], "{n} soft line break{s} typed as paragraph break{s}")
+    add(counts["note"], "{n} footnote/comment reference{s} not reproduced (dropped)")
+    add(counts["symbol"], "{n} special symbol{s} will be left out")
+    return tuple(messages)
+
+
+def _render_detail_warnings(state: _ParseState) -> tuple[str, ...]:
+    """The two losses a count is *not* enough to describe.
+
+    A text box needs its own words quoted, or the user cannot tell which part
+    of their document is missing. Tracked changes need saying once however
+    many there were, because what matters is not the number but that a
+    choice between two versions was made on the user's behalf.
+    """
+    messages: list[str] = []
+    if state.text_box_excerpts:
+        messages.append(_text_box_message(state.text_box_excerpts))
+    if state.tracked_changes:
         messages.append(
-            f"{n} table{'s' if n != 1 else ''} flattened to one paragraph per cell"
-        )
-    if counts["break"]:
-        n = counts["break"]
-        messages.append(
-            f"{n} soft line break{'s' if n != 1 else ''} typed as paragraph break{'s' if n != 1 else ''}"
+            "this document had tracked changes; it is typed as the final version, "
+            "with the edits accepted and the deleted text left out"
         )
     return tuple(messages)
