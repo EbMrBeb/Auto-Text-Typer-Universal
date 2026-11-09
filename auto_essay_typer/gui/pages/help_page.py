@@ -1,4 +1,5 @@
-"""The Help page: how to use the app, per-OS permission notes, and about info.
+"""The Help page: how to use the app, importing a document, which editor it is
+typing into, per-OS permission notes, and about info.
 
 Built around :meth:`HelpPage.add_section` so new sections (a changelog, more
 FAQ entries, ...) can be appended later without restructuring this page.
@@ -6,11 +7,15 @@ FAQ entries, ...) can be appended later without restructuring this page.
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from auto_essay_typer.gui.controls import focus_ring_bleed
+from auto_essay_typer.gui.labels import WrappingLabel
 from auto_essay_typer.platforms import OperatingSystem, current_os
+from auto_essay_typer.targets import targets_for
 
 #: Rich-text list used by the sections below. Qt's rich text has no stylesheet
 #: for list items, so spacing is set inline: a little air between items and a
@@ -24,6 +29,11 @@ def _ordered(*items: str) -> str:
     return f"<ol style='{_LIST_STYLE}'>{body}</ol>"
 
 
+def _unordered(*items: str) -> str:
+    body = "".join(f"<li style='{_ITEM_STYLE}'>{item}</li>" for item in items)
+    return f"<ul style='{_LIST_STYLE}'>{body}</ul>"
+
+
 def _paragraph(text: str) -> str:
     return f"<p style='margin:0; line-height:140%;'>{text}</p>"
 
@@ -34,6 +44,37 @@ _HOW_TO_USE = _ordered(
     "During the countdown, click into the document or field where the text should go.",
     "Keep your hands off the mouse and keyboard while it types.",
     "Press <b>Esc</b>, or the <b>Stop</b> button, at any time to end the run early.",
+)
+
+_IMPORT = _ordered(
+    "Paste the link to a Google Doc into the box at the top of the Type page, or press "
+    "<b>Browse…</b> and pick a <b>.docx</b> or <b>.html</b> file on this computer (a plain "
+    "<b>.txt</b> or <b>.md</b> file works too).",
+    "Press <b>Import</b>. The document arrives with its real formatting — its headings, bold, "
+    "italic and lists — and that is what gets typed, not just its words.",
+    "<b>What will not be reproduced</b>, under the document, lists anything that will not make "
+    "it across: a picture, a table, a list the editor you chose has no shortcut for. It is there "
+    "to read before you start, not after.",
+    "<b>Back to plain text</b> brings the text box back, with the document's words in it to edit "
+    "as you like. Its formatting is dropped.",
+)
+
+_EDITOR_INTRO = (
+    "<b>Typing into</b>, in <b>Quick settings</b> on the Type page, is the editor the keystrokes "
+    "are going to. To put a document's formatting back the app presses that editor's own keyboard "
+    "shortcuts, so choosing the wrong one presses the wrong keys and types something you did not "
+    "ask for. This computer offers:"
+)
+
+_GOOGLE_DOCS = _ordered(
+    "<b>Share the document before you import it.</b> It has to be shared so that "
+    "<b>Anyone with the link can view</b> it, because the app opens the link the way a stranger "
+    "would. If only you can open it, download it instead (<b>File &gt; Download &gt; Microsoft "
+    "Word (.docx)</b>) and import that file.",
+    "<b>Turn Google Docs' own corrections off before typing into it</b>, under <b>Tools &gt; "
+    "Preferences</b>: smart quotes, automatic capitalisation and automatic substitution. They "
+    "rewrite text after it arrives — straight quotes curl, a sentence gains a capital, two "
+    "hyphens become a dash — so what ends up in the document is not quite what you gave the app.",
 )
 
 _KEYBOARD = _ordered(
@@ -81,6 +122,21 @@ _OS_LABEL = {
 }
 
 
+def _editors() -> str:
+    """The "Typing into" section's body: the editors this computer offers, each with its own note.
+
+    Taken from the target registry rather than written out here, so the list is
+    the picker's own -- which editors a computer offers differs (Microsoft Word
+    has no Linux release, TextEdit is macOS only) -- and each editor's note is
+    the same sentence that is shown under the picker itself.
+    """
+    items = tuple(
+        f"<b>{html.escape(target.name, quote=False)}</b> — {html.escape(target.notes, quote=False)}"
+        for target in targets_for(current_os())
+    )
+    return _paragraph(_EDITOR_INTRO) + _unordered(*items)
+
+
 class HelpPage(QWidget):
     """Sections are appended top-to-bottom, above a trailing stretch that keeps
     a short page from looking like it's centered oddly in a tall window.
@@ -122,6 +178,9 @@ class HelpPage(QWidget):
         outer.addLayout(focus_ring_bleed(scroll), 1)
 
         self.add_section("How to use", _HOW_TO_USE)
+        self.add_section("Importing a document", _IMPORT)
+        self.add_section("Typing into", _editors())
+        self.add_section("Google Docs", _GOOGLE_DOCS)
         self.add_section("Keyboard", _KEYBOARD)
         self.add_section("From the tray or a hotkey", _ANYWHERE)
         os_ = current_os()
@@ -157,8 +216,11 @@ class HelpPage(QWidget):
         title_label.setObjectName("SectionTitle")
         layout.addWidget(title_label)
 
-        body_label = QLabel(body_html)
-        body_label.setWordWrap(True)
+        # A WrappingLabel, not a plain wrapped QLabel: a wrapped label promises only
+        # one line, and a long section (the editor list) is then handed a card too
+        # short for it and has its last lines cut off. This one asks for the height
+        # its text needs at the width it has been given.
+        body_label = WrappingLabel(body_html)
         body_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(body_label)
 
