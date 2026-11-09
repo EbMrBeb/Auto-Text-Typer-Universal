@@ -124,6 +124,88 @@ def test_empty_paragraph_has_no_runs():
     assert doc.paragraphs == (Paragraph(),)
 
 
+# --- text with no block element of its own ---------------------------------------
+#
+# A file that is plain text, or a wrapper holding text directly, used to come
+# back as an empty Document with nothing reported -- the worst case the
+# importers can produce, because the panel then says there is no problem.
+
+
+def test_a_file_that_is_just_plain_text_is_still_read():
+    doc, _ = parse_gdocs_html("plain text with no tags at all")
+    assert [p.text for p in doc.paragraphs] == ["plain text with no tags at all"]
+
+
+def test_text_sitting_directly_in_a_div_is_read():
+    doc, _ = parse_gdocs_html("<div>loose text in a div</div>")
+    assert [p.text for p in doc.paragraphs] == ["loose text in a div"]
+
+
+def test_a_span_with_no_paragraph_around_it_is_read():
+    html = '<style>.c1{font-weight:700}</style><div><span class="c1">span text</span></div>'
+    doc, _ = parse_gdocs_html(html)
+    assert doc.paragraphs[0].runs == (Run("span text", frozenset({TextStyle.BOLD})),)
+
+
+def test_text_either_side_of_a_block_keeps_its_place_and_does_not_fuse():
+    doc, _ = parse_gdocs_html("<div>before<p>middle</p>after</div>")
+    assert [p.text for p in doc.paragraphs] == ["before", "middle", "after"]
+
+
+def test_loose_text_in_the_body_is_read_alongside_its_paragraphs():
+    doc, _ = parse_gdocs_html("<html><body>loose in body<p>and a para</p></body></html>")
+    assert [p.text for p in doc.paragraphs] == ["loose in body", "and a para"]
+
+
+def test_an_image_with_no_paragraph_around_it_is_still_reported():
+    _doc, warnings = parse_gdocs_html('<div><img src="a.png"/></div>')
+    assert any("image" in w for w in warnings)
+
+
+def test_a_stylesheet_is_never_typed_as_text():
+    html = "<style>.c1{font-weight:700}</style><p>body</p>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["body"]
+
+
+def test_the_page_title_is_not_typed_as_body_text():
+    html = "<html><head><title>Not body text</title></head><body><p>body</p></body></html>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["body"]
+
+
+def test_a_stylesheet_inside_the_body_is_not_typed_either():
+    html = "<body><style>.c1{font-weight:700}</style><p>body</p></body>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["body"]
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<blockquote>quoted text</blockquote>",
+        "<section><p>quoted text</p></section>",
+        "<li>quoted text</li>",
+        "<dl><dt>quoted text</dt></dl>",
+    ],
+)
+def test_a_block_element_with_no_style_of_its_own_still_has_its_text_typed(html):
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["quoted text"]
+
+
+def test_text_put_in_a_list_outside_an_item_is_still_typed():
+    html = "<ul><li>a real item</li><div>stray text</div></ul>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["a real item", "stray text"]
+
+
+def test_a_stylesheet_inside_a_list_is_not_typed():
+    html = "<ul><style>.c1{font-weight:700}</style><li>a real item</li></ul>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["a real item"]
+
+
 # --- run styles: classes ---------------------------------------------------------
 
 
@@ -399,6 +481,85 @@ def test_table_cell_keeps_its_run_styles():
     assert doc.paragraphs[0].runs[0].styles == frozenset({TextStyle.BOLD})
 
 
+def test_two_paragraphs_in_one_cell_stay_two_paragraphs():
+    # Google writes one <p> per paragraph inside a cell. Running them together
+    # would fuse the end of one onto the start of the next.
+    html = "<table><tr><td><p>first para</p><p>second para</p></td></tr></table>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["first para", "second para"]
+
+
+def test_br_inside_a_cell_splits_the_cell_text_and_is_counted():
+    html = "<table><tr><td>cell line one<br>cell line two</td></tr></table>"
+    doc, warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["cell line one", "cell line two"]
+    assert any("soft line break" in w for w in warnings)
+
+
+def test_a_nested_table_inside_a_cell_keeps_its_cells_apart():
+    html = (
+        "<table><tr><td>outer"
+        "<table><tr><td>inner A</td><td>inner B</td></tr></table>"
+        "</td></tr></table>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["outer", "inner A", "inner B"]
+    table_warnings = [w for w in warnings if "table" in w]
+    assert len(table_warnings) == 1
+    assert "2" in table_warnings[0]
+
+
+def test_an_empty_cell_still_produces_a_paragraph():
+    html = "<table><tr><td>filled</td><td></td></tr></table>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["filled", ""]
+
+
+def test_a_table_caption_is_typed_before_the_cells():
+    html = "<table><caption>Table 1: results</caption><tr><td>cell</td></tr></table>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["Table 1: results", "cell"]
+
+
+# --- block elements nested inside inline content -------------------------------------
+
+
+def test_block_elements_nested_in_a_paragraph_are_not_fused():
+    html = "<p>wrapper<div><p>inner one</p><p>inner two</p></div></p>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["wrapper", "inner one", "inner two"]
+
+
+def test_a_nested_list_inside_a_list_item_is_not_fused():
+    html = "<ul><li>outer item<ul><li>inner item</li></ul></li></ul>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["outer item", "inner item"]
+
+
+def test_a_wrapper_div_does_not_add_an_empty_paragraph():
+    html = "<p><div>only text</div></p>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["only text"]
+
+
+def test_a_nested_block_boundary_is_not_counted_as_a_line_break():
+    html = "<p>a<div>b</div></p>"
+    _doc, warnings = parse_gdocs_html(html)
+    assert not any("soft line break" in w for w in warnings)
+
+
+def test_a_nested_block_keeps_the_styles_it_inherits_and_its_own():
+    html = (
+        "<style>.c1{font-weight:700}.c2{font-style:italic}</style>"
+        '<p class="x"><span class="c1">bold <div class="c2">and italic</div></span></p>'
+    )
+    doc, _ = parse_gdocs_html(html)
+    assert [p.runs for p in doc.paragraphs] == [
+        (Run("bold ", frozenset({TextStyle.BOLD})),),
+        (Run("and italic", frozenset({TextStyle.BOLD, TextStyle.ITALIC})),),
+    ]
+
+
 def test_whitespace_between_table_rows_is_ignored_not_treated_as_a_cell():
     html = "<table>\n  <tr><td>A1</td></tr>\n  <tr><td>A2</td></tr>\n</table>"
     doc, _ = parse_gdocs_html(html)
@@ -512,6 +673,70 @@ def test_inline_footnote_reference_anchor_is_dropped_from_body_text():
     # An inline footnote reference is not a real hyperlink -- it must not
     # also show up counted as one.
     assert not any("typed as plain text" in w for w in warnings)
+
+
+def test_a_footnotes_block_shaped_as_google_writes_it_is_not_typed_as_body_text():
+    # Google marks neither the wrapping <div> nor each note's <p>: the only
+    # sign is the back-link at the start of the note. Read as ordinary content,
+    # the notes are typed as the closing paragraphs of the essay.
+    html = (
+        '<p>a claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> continues</p>'
+        '<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a>'
+        "<span> Smith, A Study of Things, p. 14.</span></p></div>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["a claim continues"]
+    assert any("footnote" in w for w in warnings)
+
+
+def test_one_footnote_is_reported_once_not_once_per_end_of_it():
+    # The marker in the text and the note itself are two halves of one
+    # footnote, so counting both says "2 footnotes" about a document with one.
+    html = (
+        '<p>a claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> continues</p>'
+        '<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> the note</span></p></div>'
+    )
+    _doc, warnings = parse_gdocs_html(html)
+    (footnote_warning,) = [w for w in warnings if "footnote" in w]
+    assert footnote_warning.startswith("1 ")
+
+
+def test_two_footnotes_are_reported_as_two():
+    html = (
+        '<p>first<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> and '
+        'second<sup><a href="#ftnt2" id="ftnt_ref2">[2]</a></sup></p>'
+        '<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> note one</span></p>'
+        '<p><a href="#ftnt_ref2" id="ftnt2">[2]</a><span> note two</span></p></div>'
+    )
+    _doc, warnings = parse_gdocs_html(html)
+    (footnote_warning,) = [w for w in warnings if "footnote" in w]
+    assert footnote_warning.startswith("2 ")
+
+
+def test_a_comment_section_with_no_per_note_links_is_still_reported():
+    html = '<p>body text</p><div id="comments"><p>a review comment</p></div>'
+    _doc, warnings = parse_gdocs_html(html)
+    (comment_warning,) = [w for w in warnings if "comment" in w]
+    assert comment_warning.startswith("1 ")
+
+
+def test_a_paragraph_that_merely_starts_with_a_footnote_marker_is_still_body_text():
+    html = '<p><sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> says otherwise.</p>'
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == [" says otherwise."]
+
+
+def test_the_footnoted_export_fixture_types_the_body_and_reports_the_notes():
+    html = (FIXTURES_DIR / "gdocs_export_footnotes.html").read_text(encoding="utf-8")
+    doc, warnings = parse_gdocs_html(html)
+
+    assert doc == Document(
+        (
+            Paragraph(runs=(Run("The first claim rests on one source."),)),
+            Paragraph(runs=(Run("The second claim rests on another."),)),
+        )
+    )
+    assert warnings == ("2 footnote/comment references not reproduced (dropped)",)
 
 
 # --- non-default fonts / sizes / colours: one aggregated warning ------------------------
