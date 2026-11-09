@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
             self.run_controller,
             self._theme_manager,
             permission_checker=self._permission_checker,
+            settings_store=self.settings_store,
         )
 
     def _build_settings_page(self) -> QWidget:
