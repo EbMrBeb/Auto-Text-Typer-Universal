@@ -3,6 +3,8 @@ name = "auto-text-typer"
 version = "0.1.0"
 description = "Types supplied text into any application with human-like rhythm and self-corrected mistakes"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["pynput>=1.8", "truststore>=0.10", "certifi>=2024.2.2"]
 
 [project.scripts]
@@ -17,7 +19,10 @@ gui = ["PySide6-Essentials>=6.8"]
 build = ["pyinstaller>=6.12", "Pillow>=10", "pyyaml>=6"]
 
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 for PEP 639: the SPDX `license = "MIT"` string and `license-files`
+# above are a hard error on older setuptools, which only accepted the
+# now-deprecated `license = {text = "..."}` table form.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
