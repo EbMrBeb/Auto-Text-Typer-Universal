@@ -19,10 +19,20 @@ change, and encodes the actual level in the class name itself
 (``lst-kix_<listid>-<level>``). This module reads that suffix rather than
 tree depth.
 
+Footnotes and comments are the other surprise, and the dangerous one. Google
+marks the note's own text in no way at all: it is an ordinary ``<p>`` inside
+an ordinary ``<div>``, recognisable only by the small back-link at its start.
+Read as ordinary content it becomes the closing paragraphs of the essay. This
+module recognises that back-link, drops the note, and counts each footnote
+once rather than once per half of it (see ``_NOTE_ID_RE``).
+
 Anything with no keyboard-typable equivalent -- images, tables, hard rules,
 links (as clickable links), footnotes, comments, non-default fonts/sizes/
 colours -- is dropped from the Document and reported through the warnings
-this module returns, never silently lost.
+this module returns, never silently lost. And nothing that *is* typable is
+ever run onto its neighbour: a line break or a nested block element inside
+inline content ends the paragraph it is in, so two unrelated pieces of text
+never fuse into a word that is in no document (see ``_group_pieces``).
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ import re
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
+from enum import Enum
 from html.parser import HTMLParser
 
 from auto_essay_typer.document import (
@@ -197,9 +208,29 @@ def _default_font_family(value: str) -> bool:
 
 @dataclass
 class _ParseContext:
+    """The stylesheet, plus everything the walk accumulates about what is lost.
+
+    ``note_keys`` is not a count of its own: it is which footnotes and
+    comments have already been counted, so that the two halves Google writes
+    for one of them (see :func:`_note_key`) add up to one.
+    """
+
     class_props: dict[str, dict[str, str]]
     warnings: Counter[str] = field(default_factory=Counter)
     non_default_style: bool = False
+    note_keys: set[tuple[str, str]] = field(default_factory=set)
+
+    def add_note(self, key: tuple[str, str] | None) -> None:
+        """Count one footnote or comment, once however many halves of it turn up.
+
+        A note with no key of its own -- an unnumbered comments block -- is
+        always counted, since there is nothing to match it against.
+        """
+        if key is not None:
+            if key in self.note_keys:
+                return
+            self.note_keys.add(key)
+        self.warnings["footnote"] += 1
 
     def resolve_props(self, node: _Node) -> dict[str, str]:
         """This element's effective CSS: its classes' declarations, then its
@@ -264,21 +295,72 @@ def _resolve_alignment(node: _Node, ctx: _ParseContext) -> Alignment:
 #
 # Google Docs has no keyboard-typable equivalent of a footnote or a comment,
 # so both are dropped everywhere they can appear: the small superscript
-# reference mark inline in the body text, and the section Google appends
-# after the body listing their contents.
+# reference mark inline in the body text, and the note's own text, which
+# Google writes after the body.
+#
+# Nothing marks the note's text as a note. Google gives it an ordinary <p>
+# inside an ordinary <div>, and the only sign is the small back-link at its
+# start -- so a parser that goes by the elements alone types the whole
+# bibliography as the closing paragraphs of the essay.
+
+#: Google's ids for the two halves of one footnote or comment: the marker in
+#: the body text ("ftnt_ref3") and the note's own text ("ftnt3"). Both reduce
+#: to the same key, so a footnote is reported once and not once per half.
+_NOTE_ID_RE = re.compile(r"^#?(ftnt|cmnt)(_ref)?(\d*)$")
+
+#: Inline elements Google may wrap a marker or a back-link in.
+_INLINE_WRAPPER_TAGS = frozenset(
+    {"span", "sup", "sub", "b", "i", "u", "s", "strike", "em", "strong", "font", "small"}
+)
 
 
-def _is_footnote_or_comment_anchor(node: _Node) -> bool:
+def _note_key(value: str) -> tuple[str, str] | None:
+    """``"ftnt_ref3"`` / ``"ftnt3"`` / ``"#ftnt3"`` all become ``("ftnt", "3")``."""
+    match = _NOTE_ID_RE.match(value.strip().lower())
+    return (match.group(1), match.group(3)) if match else None
+
+
+def _note_anchor_key(node: _Node) -> tuple[str, str] | None:
+    """Which footnote or comment this ``<a>`` belongs to, or None for an
+    ordinary link (the one kind of anchor whose text *is* typed)."""
+    if node.tag != "a":
+        return None
+    for attr in ("id", "href"):
+        key = _note_key(node.attrs.get(attr, ""))
+        if key is not None:
+            return key
+    return None
+
+
+def _is_note_text_anchor(node: _Node) -> bool:
+    """Whether this ``<a>`` is the back-link at the start of a note's own text,
+    rather than the marker left in the body text.
+
+    The two differ only by a ``_ref`` in the id Google gives them.
+    """
     if node.tag != "a":
         return False
-    ident = node.attrs.get("id", "").lower()
-    href = node.attrs.get("href", "").lower()
-    return (
-        ident.startswith("ftnt")
-        or ident.startswith("cmnt")
-        or href.startswith("#ftnt")
-        or href.startswith("#cmnt")
-    )
+    match = _NOTE_ID_RE.match(node.attrs.get("id", "").strip().lower())
+    return match is not None and match.group(2) is None
+
+
+def _leading_note_key(node: _Node) -> tuple[str, str] | None:
+    """The note whose text this block holds, if it opens with a back-link.
+
+    A block whose *first* content is a back-link is a note; a body paragraph
+    that happens to start with a footnote marker is not.
+    """
+    for child in node.children:
+        if isinstance(child, str):
+            if child.strip():
+                return None
+            continue
+        if _is_note_text_anchor(child):
+            return _note_anchor_key(child)
+        if child.tag in _INLINE_WRAPPER_TAGS:
+            return _leading_note_key(child)
+        return None
+    return None
 
 
 def _is_footnote_or_comment_section(node: _Node) -> bool:
@@ -291,6 +373,31 @@ def _is_footnote_or_comment_section(node: _Node) -> bool:
         or "footnote" in classes
         or "comment" in classes
     )
+
+
+def _count_notes_under(node: _Node, ctx: _ParseContext) -> int:
+    """Count every footnote and comment anchored anywhere under ``node``."""
+    found = 0
+    key = _note_anchor_key(node)
+    if key is not None:
+        found += 1
+        ctx.add_note(key)
+    for child in node.children:
+        if not isinstance(child, str):
+            found += _count_notes_under(child, ctx)
+    return found
+
+
+def _record_note_section(node: _Node, ctx: _ParseContext) -> None:
+    """Count the notes in a section Google appends after the body, and drop it.
+
+    Counting the back-links inside rather than the section itself is what
+    keeps a note that also has a marker in the body text from being reported
+    twice. A section with no back-links at all (a bare comments block) still
+    stands for one thing the user will not get, so it counts as one.
+    """
+    if not _count_notes_under(node, ctx):
+        ctx.add_note(None)
 
 
 # --- inline content: text, spans, links, images, line breaks -------------------
@@ -309,11 +416,49 @@ def _clean_text(text: str) -> str:
     )
 
 
-# A piece of inline content: either one (text, styles) span, or None marking
-# a <br> -- a split point between two Paragraphs the planner must reach with
-# a real Enter keypress, since there is no "soft newline" action in this
-# project's typing model.
-_Piece = tuple[str, frozenset[TextStyle]] | None
+class _Split(Enum):
+    """A boundary between two Paragraphs, inside one block element's content.
+
+    The two kinds behave differently when the groups are built. A
+    ``SOFT_BREAK`` always ends its paragraph, even where that leaves an empty
+    one, because the reader sees that blank line; a ``BLOCK`` edge only ends
+    one where there is text on both sides of it, or every wrapper ``<div>``
+    would add a blank paragraph of its own.
+    """
+
+    SOFT_BREAK = "soft_break"  # a <br>
+    BLOCK = "block"  # a nested block element's own start or end
+
+
+# A piece of inline content: either one (text, styles) span, or a split point
+# between two Paragraphs the planner must reach with a real Enter keypress,
+# since there is no "soft newline" action in this project's typing model.
+_Piece = tuple[str, frozenset[TextStyle]] | _Split
+
+#: Elements that are paragraphs (or hold them) rather than inline content. One
+#: nested inside inline content still has its own edges: without them its text
+#: would be fused onto whatever sits either side of it -- a <p> inside a table
+#: cell onto the next <p>, a nested list's item onto the item it hangs under.
+_BLOCK_TAGS = frozenset(
+    {
+        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+        "ul", "ol", "li", "dl", "dt", "dd",
+        "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption",
+        "blockquote", "pre", "figure", "figcaption", "address",
+        "section", "article", "header", "footer", "main", "nav", "aside",
+    }
+)
+
+#: Elements whose content is machinery rather than text anyone reads: a
+#: stylesheet (already consumed for its declarations), the page's own title,
+#: and the head that holds them. Typing any of it would put CSS in the essay.
+_NON_CONTENT_TAGS = frozenset(
+    {
+        "style", "script", "noscript", "template",
+        "head", "title", "meta", "link", "base",
+        "colgroup", "col",
+    }
+)
 
 
 def _extract_inline(node: _Node, inherited: frozenset[TextStyle], ctx: _ParseContext) -> list[_Piece]:
@@ -326,23 +471,36 @@ def _extract_inline(node: _Node, inherited: frozenset[TextStyle], ctx: _ParseCon
             continue
 
         tag = child.tag
+        note_key = _note_anchor_key(child)
         if tag == "br":
-            pieces.append(None)
+            pieces.append(_Split.SOFT_BREAK)
         elif tag == "img":
             ctx.warnings["image"] += 1
         elif tag == "hr":
             ctx.warnings["hr"] += 1
-        elif _is_footnote_or_comment_anchor(child):
-            ctx.warnings["footnote"] += 1
+        elif tag in _NON_CONTENT_TAGS:
+            # A <style> or <script> that ended up inside body content: its
+            # text is machinery, and typing it would put CSS in the essay.
+            continue
+        elif note_key is not None:
+            # A footnote's or comment's marker: a small superscript number
+            # with no keystroke behind it, so it is reported, not typed.
+            ctx.add_note(note_key)
         elif tag == "a":
             ctx.warnings["link"] += 1
             child_styles = inherited | _text_styles_from_props(ctx.resolve_props(child))
             pieces.extend(_extract_inline(child, child_styles, ctx))
+        elif tag in _BLOCK_TAGS:
+            if tag == "table":
+                ctx.warnings["table"] += 1
+            child_styles = inherited | _text_styles_from_props(ctx.resolve_props(child))
+            pieces.append(_Split.BLOCK)
+            pieces.extend(_extract_inline(child, child_styles, ctx))
+            pieces.append(_Split.BLOCK)
         else:
             # span, b, i, u, s/strike, sup, sub, font, or anything else --
             # treated as a generic inline wrapper: fold in its own style,
-            # recurse for its text. This is also how a <p> nested inside a
-            # table cell gets flattened transparently (see _flatten_table).
+            # recurse for its text.
             child_styles = inherited | _text_styles_from_props(ctx.resolve_props(child))
             pieces.extend(_extract_inline(child, child_styles, ctx))
     return pieces
@@ -360,6 +518,33 @@ def _merge_runs(pieces: list[tuple[str, frozenset[TextStyle]]]) -> tuple[Run, ..
     return tuple(merged)
 
 
+def _group_pieces(
+    pieces: list[_Piece], ctx: _ParseContext
+) -> list[list[tuple[str, frozenset[TextStyle]]]]:
+    """One block's inline pieces, split into one group of runs per Paragraph.
+
+    Only the ``<br>`` splits are counted as soft line breaks: a nested block
+    element's edges are structure the reader never sees as a break, so
+    reporting them would tell the user about line breaks their document does
+    not have. See :class:`_Split` for why the two kinds split differently.
+    """
+    groups: list[list[tuple[str, frozenset[TextStyle]]]] = [[]]
+    pending_block_edge = False
+    for piece in pieces:
+        if piece is _Split.SOFT_BREAK:
+            ctx.warnings["break"] += 1
+            groups.append([])
+            pending_block_edge = False
+        elif piece is _Split.BLOCK:
+            pending_block_edge = True
+        else:
+            if pending_block_edge and groups[-1]:
+                groups.append([])
+            pending_block_edge = False
+            groups[-1].append(piece)
+    return groups
+
+
 def _build_paragraphs_from_block(
     node: _Node,
     style: ParagraphStyle,
@@ -368,7 +553,7 @@ def _build_paragraphs_from_block(
     ctx: _ParseContext,
 ) -> list[Paragraph]:
     """One block element (``<p>``, ``<h1>``..``<h6>``, or a list's ``<li>``)
-    -> one or more Paragraphs (more than one iff it contains a ``<br>``).
+    -> one or more Paragraphs (more than one iff its content splits).
 
     A split half inherits the same style/alignment/list placement as the
     whole block it came from -- exactly what a real Enter keypress would
@@ -379,14 +564,6 @@ def _build_paragraphs_from_block(
     alignment = _resolve_alignment(node, ctx)
     pieces = _extract_inline(node, frozenset(), ctx)
 
-    groups: list[list[tuple[str, frozenset[TextStyle]]]] = [[]]
-    for piece in pieces:
-        if piece is None:
-            ctx.warnings["break"] += 1
-            groups.append([])
-        else:
-            groups[-1].append(piece)
-
     return [
         Paragraph(
             runs=_merge_runs(group),
@@ -395,7 +572,7 @@ def _build_paragraphs_from_block(
             list_kind=list_kind,
             list_level=list_level,
         )
-        for group in groups
+        for group in _group_pieces(pieces, ctx)
     ]
 
 
@@ -425,8 +602,13 @@ def _list_level_from_class(class_attr: str) -> int:
 
 
 def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
-    """One paragraph per cell, reading order -- table structure itself is
-    dropped (there is no keyboard shortcut that recreates a grid)."""
+    """Every cell's paragraphs in reading order -- the grid itself is dropped
+    (there is no keyboard shortcut that recreates one).
+
+    A cell holding more than one paragraph, or a line break, keeps those
+    boundaries. Run together they would fuse the end of one line onto the
+    start of the next and invent a word that is in no document.
+    """
     ctx.warnings["table"] += 1
     cells: list[Paragraph] = []
 
@@ -435,8 +617,11 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
             if isinstance(child, str):
                 continue
             if child.tag in ("td", "th"):
-                pieces = [p for p in _extract_inline(child, frozenset(), ctx) if p is not None]
-                cells.append(Paragraph(runs=_merge_runs(pieces)))
+                pieces = _extract_inline(child, frozenset(), ctx)
+                cells.extend(
+                    Paragraph(runs=_merge_runs(group))
+                    for group in _group_pieces(pieces, ctx)
+                )
             elif child.tag in ("tbody", "thead", "tfoot", "tr"):
                 visit(child)
             # caption/colgroup/col etc. carry no cell text -- ignored.
@@ -448,8 +633,19 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
 def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None:
     tag = node.tag
 
+    if tag in _NON_CONTENT_TAGS:
+        return
+
     if _is_footnote_or_comment_section(node):
-        ctx.warnings["footnote"] += 1
+        _record_note_section(node, ctx)
+        return
+
+    leading_note = _leading_note_key(node)
+    if leading_note is not None:
+        # A note's own text, which Google marks only with the back-link at
+        # its start. Typed as it stands it would read as the last paragraph
+        # of the essay.
+        ctx.add_note(leading_note)
         return
 
     heading_style = _HEADING_STYLE_BY_TAG.get(tag)
@@ -472,8 +668,18 @@ def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None
     if list_kind is not None:
         level = _list_level_from_class(node.attrs.get("class", ""))
         for child in node.children:
-            if not isinstance(child, str) and child.tag == "li":
-                out.extend(_build_paragraphs_from_block(child, ParagraphStyle.NORMAL, list_kind, level, ctx))
+            if isinstance(child, str):
+                continue
+            if child.tag == "li":
+                out.extend(
+                    _build_paragraphs_from_block(
+                        child, ParagraphStyle.NORMAL, list_kind, level, ctx
+                    )
+                )
+            else:
+                # A list is not meant to hold anything but its items, but
+                # text put there anyway still has to be typed.
+                _handle_block(child, ctx, out)
         return
 
     if tag == "table":
@@ -484,24 +690,64 @@ def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None
         ctx.warnings["hr"] += 1
         return
 
-    if tag == "div":
-        # Google wraps some ordinary content in a plain <div> (and the
-        # footnote/comment section, already handled above, is one too) --
-        # recurse so nothing nested inside an unremarkable <div> is dropped.
-        for child in node.children:
-            if not isinstance(child, str):
-                _handle_block(child, ctx, out)
-        return
+    # Anything else that holds block content: the plain <div> Google wraps
+    # some ordinary content in (the footnote/comment section, handled above,
+    # is one too), a <blockquote>, a <section>, a stray <li>. None of them
+    # carries a paragraph style of its own, but all of them hold text that
+    # still has to be typed, so each is walked rather than dropped.
+    _handle_container(node, ctx, out)
 
-    # Anything else at block level (a stray <meta>, a <style> already
-    # consumed for its CSS, ...) carries no typable content -- ignore.
+
+def _handle_container(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None:
+    """Walk a container -- the ``<body>`` or a plain wrapper ``<div>``.
+
+    Its block children are handled one by one, so a heading or a list inside
+    it keeps the style it carries rather than being flattened into the
+    container's own content. Anything else is inline content with no
+    paragraph of its own: text sitting straight in the container, a bare
+    ``<span>``, an ``<img>``. That is gathered up and becomes a paragraph
+    where it stands, because a file that is simply plain text would
+    otherwise import as an empty document with nothing reported.
+    """
+    inline: list[_Node | str] = []
+
+    def flush() -> None:
+        if not inline:
+            return
+        # The gathered content needs an element to sit in to be read as one
+        # block's worth. It is not in the tree, so it carries no classes and
+        # no alignment -- which is right: the alignment belongs to the
+        # container, not to this run of text.
+        holder = _Node("p", {})
+        holder.children = list(inline)
+        inline.clear()
+        pieces = _extract_inline(holder, frozenset(), ctx)
+        if not pieces:
+            # Nothing typable in it: a horizontal rule, a bare image. Both
+            # have been counted already, and neither is a blank line the
+            # reader sees, so neither gets a paragraph.
+            return
+        out.extend(
+            Paragraph(runs=_merge_runs(group)) for group in _group_pieces(pieces, ctx)
+        )
+
+    for child in node.children:
+        if isinstance(child, str):
+            if child.strip():
+                inline.append(child)
+        elif child.tag in _NON_CONTENT_TAGS:
+            continue
+        elif child.tag in _BLOCK_TAGS:
+            flush()
+            _handle_block(child, ctx, out)
+        else:
+            inline.append(child)
+    flush()
 
 
 def _walk_body(body: _Node, ctx: _ParseContext) -> list[Paragraph]:
     paragraphs: list[Paragraph] = []
-    for child in body.children:
-        if not isinstance(child, str):
-            _handle_block(child, ctx, paragraphs)
+    _handle_container(body, ctx, paragraphs)
     return paragraphs
 
 
@@ -512,17 +758,16 @@ def _render_warnings(ctx: _ParseContext) -> tuple[str, ...]:
     counts = ctx.warnings
     messages: list[str] = []
 
-    def add(key: str, template: str) -> None:
-        n = counts[key]
-        if n:
-            messages.append(template.format(n=n, s="" if n == 1 else "s"))
+    def add(count: int, template: str) -> None:
+        if count:
+            messages.append(template.format(n=count, s="" if count == 1 else "s"))
 
-    add("link", "{n} link{s} typed as plain text")
-    add("image", "{n} image{s} not reproduced (dropped)")
-    add("table", "{n} table{s} flattened to one paragraph per cell")
-    add("hr", "{n} horizontal rule{s} not reproduced (dropped)")
-    add("break", "{n} soft line break{s} typed as paragraph break{s}")
-    add("footnote", "{n} footnote/comment reference{s} not reproduced (dropped)")
+    add(counts["link"], "{n} link{s} typed as plain text")
+    add(counts["image"], "{n} image{s} not reproduced (dropped)")
+    add(counts["table"], "{n} table{s} flattened to one paragraph per cell")
+    add(counts["hr"], "{n} horizontal rule{s} not reproduced (dropped)")
+    add(counts["break"], "{n} soft line break{s} typed as paragraph break{s}")
+    add(counts["footnote"], "{n} footnote/comment reference{s} not reproduced (dropped)")
 
     if ctx.non_default_style:
         messages.append(
