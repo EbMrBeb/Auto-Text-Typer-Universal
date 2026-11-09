@@ -616,7 +616,9 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
         for child in container.children:
             if isinstance(child, str):
                 continue
-            if child.tag in ("td", "th"):
+            if child.tag in ("caption", "td", "th"):
+                # A caption is not a cell, but it is text the reader sees, and
+                # it sits ahead of the rows in reading order as it does here.
                 pieces = _extract_inline(child, frozenset(), ctx)
                 cells.extend(
                     Paragraph(runs=_merge_runs(group))
@@ -624,7 +626,7 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
                 )
             elif child.tag in ("tbody", "thead", "tfoot", "tr"):
                 visit(child)
-            # caption/colgroup/col etc. carry no cell text -- ignored.
+            # colgroup/col carry no text at all -- ignored.
 
     visit(table)
     return cells
@@ -699,7 +701,9 @@ def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None
 
 
 def _handle_container(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None:
-    """Walk a container -- the ``<body>`` or a plain wrapper ``<div>``.
+    """Walk a container: the ``<body>``, or any block element with no
+    paragraph style of its own -- a plain wrapper ``<div>``, a
+    ``<blockquote>``, a ``<section>``.
 
     Its block children are handled one by one, so a heading or a list inside
     it keeps the style it carries rather than being flattened into the

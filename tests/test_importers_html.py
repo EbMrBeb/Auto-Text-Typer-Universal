@@ -515,6 +515,12 @@ def test_an_empty_cell_still_produces_a_paragraph():
     assert [p.text for p in doc.paragraphs] == ["filled", ""]
 
 
+def test_a_table_caption_is_typed_before_the_cells():
+    html = "<table><caption>Table 1: results</caption><tr><td>cell</td></tr></table>"
+    doc, _ = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["Table 1: results", "cell"]
+
+
 # --- block elements nested inside inline content -------------------------------------
 
 
