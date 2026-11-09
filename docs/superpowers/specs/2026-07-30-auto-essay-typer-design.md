@@ -3,6 +3,40 @@
 **Date:** 2026-07-30
 **Status:** Approved
 
+## Status Note — Partly Superseded
+
+**Added 2026-11-09.** This is a dated design document, not living documentation.
+It records the design as approved on 2026-07-30, and the project has since
+outgrown it. **Where this document and the code disagree, the code is
+authoritative.**
+
+What changed:
+
+- **Platforms.** No longer macOS-only. macOS, Windows and Linux are all
+  supported; `platforms.py` resolves the config directory, the primary modifier
+  key, and the input-permission check per OS. "Non-macOS platforms" under *Out
+  of Scope* below no longer holds.
+- **GUI toolkit.** There is no Tkinter `app.py`. The interface is a Qt
+  (PySide6) GUI under `auto_essay_typer/gui/`, with a Type page, a Settings
+  page, an Advanced page, a tray icon and a first-run walkthrough.
+- **Document import.** Formatted documents can be imported (`importers/`:
+  .docx, Google Docs, exported HTML, plain text) and typed with their headings,
+  emphasis, alignment and lists reproduced — on top of the plain-text typing
+  this document describes. `document.py` models what is reproducible that way.
+- **Target editors.** Formatting is not Google-Docs-only. `targets.py` holds a
+  keymap per (editor, OS) for Google Docs, Microsoft Word, LibreOffice Writer,
+  TextEdit, and a plain-text fallback; `keymaps.adapt_document` fits a document
+  to whatever its target can actually express. Google Docs remains the
+  reference editor the document model was designed against.
+- **Smaller drift.** The `typer_core/` subpackage in the module layout below is
+  flat under `auto_essay_typer/`, and the global hotkeys are no longer
+  `F9`/`F10` (see `app_settings.default_hotkeys`, which also explains why).
+
+What held: the core invariant, the plan/execute split, and the pure, seeded
+planner are all intact, and `simulator.py` is still the referee.
+
+Everything below is the original document, unchanged.
+
 ## Purpose
 
 A macOS desktop tool that types a body of text into any focused application using
