@@ -128,7 +128,7 @@ class Profile:
 def field_names() -> tuple[str, ...]:
     """Sorted Profile field names, derived from dataclass metadata.
 
-    Never hardcode this list elsewhere: a 20th knob added to the dataclass
+    Never hardcode this list elsewhere: the next knob added to the dataclass
     above should not require touching this function or any of its callers.
     """
     return tuple(sorted(f.name for f in fields(Profile)))
