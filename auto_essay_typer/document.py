@@ -1,14 +1,16 @@
 """The formatted-document model shared by importers, the planner, and the
-Google Docs editing simulator.
+reference editing simulator, which models Google Docs.
 
 A :class:`Document` is deliberately *not* a rich-text format in the general
-sense -- it only models what can actually be reproduced by typing into a
-blank Google Doc and pressing its keyboard shortcuts (section 3 of the
-project's Google Docs editing model). Anything a source document contains
-that cannot be expressed this way (images, tables, fonts, colours, links,
-footnotes, comments, soft line breaks, ...) has no representation here at
-all; it is the importer's job to report that loss via ``ImportReport``
-rather than silently drop it.
+sense. It models only what the Google Docs editing model can reproduce by
+typing into a blank Google Doc and pressing its keyboard shortcuts;
+``simulator.simulate_document`` implements that model. Google Docs is the
+reference editor, not the only target: ``keymaps.adapt_document`` narrows a
+Document to what a given target editor can express before it is planned.
+Anything a source document contains that cannot be expressed this way
+(images, tables, fonts, colours, links, footnotes, comments, soft line
+breaks, ...) has no representation here at all; it is the importer's job to
+report that loss via ``ImportReport`` rather than silently drop it.
 
 ``normalized()`` exists because two Documents that differ only in
 incidental structure -- an unmerged run split for no visible reason, or a
@@ -31,7 +33,16 @@ class TextStyle(StrEnum):
 
 
 class ParagraphStyle(StrEnum):
-    """A Google Docs paragraph style (the "Styles" menu / cmd+alt+n family)."""
+    """A paragraph style from Google Docs' Styles menu.
+
+    NORMAL and HEADING_1 through HEADING_6 have Google Docs shortcuts: on macOS
+    they are ``cmd+alt+0`` to ``cmd+alt+6``, and on Windows and Linux
+    ``ctrl+alt+0`` to ``ctrl+alt+6``. Both keymaps are transcribed from
+    Google's help center, as recorded by the ``google-docs`` entry in
+    ``targets.py`` (``verified=True``). Neither has a chord for Title or
+    Subtitle, so ``keymaps.adapt_document`` substitutes HEADING_1 and
+    HEADING_2 for them when the target has no shortcut for the style itself.
+    """
 
     NORMAL = "normal"
     TITLE = "title"
