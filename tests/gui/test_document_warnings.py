@@ -45,58 +45,101 @@ _JARGON = ("keymap", "FormatOp", "adapt_document", "runs ", " run ", "(dropped)"
 
 # --- the importers' messages ---------------------------------------------------------------------
 
+#: Every importer message the panel words itself, and the sentence it becomes. Every kind of loss
+#: the importers can report needs a row here: ``tests/gui/test_import_note_rules.py`` fails for a
+#: kind with none, because a sentence nobody has pinned is one a reword can change unseen.
+IMPORT_SENTENCES: list[tuple[str, str]] = [
+    (
+        "1 link typed as plain text",
+        "1 link will be typed as plain text, not as a clickable link.",
+    ),
+    (
+        "3 links typed as plain text",
+        "3 links will be typed as plain text, not as clickable links.",
+    ),
+    (
+        "1 image not reproduced (dropped)",
+        "1 image will be left out, because images can't be typed.",
+    ),
+    (
+        "2 images not reproduced (dropped)",
+        "2 images will be left out, because images can't be typed.",
+    ),
+    (
+        "1 table flattened: each cell typed as one or more paragraphs, row by row",
+        "1 table will be typed without its rows and columns: each cell becomes one or more "
+        "paragraphs, row by row.",
+    ),
+    (
+        "2 tables flattened: each cell typed as one or more paragraphs, row by row",
+        "2 tables will be typed without their rows and columns: each cell becomes one or more "
+        "paragraphs, row by row.",
+    ),
+    (
+        # The Google Docs reader, which types a cell's paragraphs as ordinary text.
+        "1 table flattened: each cell typed as one or more paragraphs, row by row, "
+        "losing any heading style, alignment or list inside a cell",
+        "1 table will be typed without its rows and columns: each cell becomes one or more "
+        "paragraphs, row by row. Headings, lists and alignment inside a cell are not kept.",
+    ),
+    ("1 horizontal rule not reproduced (dropped)", "1 horizontal line will be left out."),
+    ("4 horizontal rules not reproduced (dropped)", "4 horizontal lines will be left out."),
+    (
+        "1 soft line break typed as paragraph break",
+        "1 line break inside a paragraph will be typed as a new paragraph.",
+    ),
+    (
+        "5 soft line breaks typed as paragraph breaks",
+        "5 line breaks inside a paragraph will be typed as new paragraphs.",
+    ),
+    (
+        "1 footnote/endnote/comment reference dropped, along with the text of the note",
+        "1 footnote, endnote or comment will be left out, both the marker and the text of the "
+        "note. If you need it, add it back by hand.",
+    ),
+    (
+        "2 footnote/endnote/comment references dropped, along with the text of the note",
+        "2 footnotes, endnotes or comments will be left out, both the markers and the text of "
+        "each note. If you need them, add them back by hand.",
+    ),
+    (
+        "1 special symbol will be left out",
+        "1 symbol from a symbol font, such as Wingdings, will be left out, because it can't be typed.",
+    ),
+    (
+        "3 special symbols will be left out",
+        "3 symbols from symbol fonts, such as Wingdings, will be left out, because they can't be typed.",
+    ),
+    (
+        "1 text box's content will not be reproduced: \"Important sidebar note\"",
+        "1 text box will be left out, with the text in it: \"Important sidebar note\". "
+        "If you need that text, add it by hand.",
+    ),
+    (
+        "2 text boxes' content will not be reproduced: \"first box\", \"second box\"",
+        "2 text boxes will be left out, with the text in them: \"first box\", \"second box\". "
+        "If you need that text, add it by hand.",
+    ),
+    (
+        # A text box with no words in it has nothing to quote or to add back.
+        "1 text box's content will not be reproduced",
+        "1 text box will be left out.",
+    ),
+    (
+        "this document had tracked changes; it is typed as the final version, "
+        "with the edits accepted and the deleted text left out",
+        "This document has tracked changes. It will be typed as the final version: added text is "
+        "kept and deleted text is left out. To type a different version, accept or reject the "
+        "changes in Word first.",
+    ),
+    (
+        "this document uses custom fonts, sizes, or colours, which are not reproduced",
+        "Custom fonts, text sizes and colours will not be reproduced.",
+    ),
+]
 
-@pytest.mark.parametrize(
-    ("message", "expected"),
-    [
-        (
-            "1 link typed as plain text",
-            "1 link will be typed as plain text, not as a clickable link.",
-        ),
-        (
-            "3 links typed as plain text",
-            "3 links will be typed as plain text, not as clickable links.",
-        ),
-        (
-            "1 image not reproduced (dropped)",
-            "1 image will be left out, because images can't be typed.",
-        ),
-        (
-            "2 images not reproduced (dropped)",
-            "2 images will be left out, because images can't be typed.",
-        ),
-        (
-            "1 table flattened to one paragraph per cell",
-            "1 table will be typed as plain paragraphs, one per cell.",
-        ),
-        (
-            "2 tables flattened to one paragraph per cell",
-            "2 tables will be typed as plain paragraphs, one per cell.",
-        ),
-        ("1 horizontal rule not reproduced (dropped)", "1 horizontal line will be left out."),
-        ("4 horizontal rules not reproduced (dropped)", "4 horizontal lines will be left out."),
-        (
-            "1 soft line break typed as paragraph break",
-            "1 line break inside a paragraph will be typed as a new paragraph.",
-        ),
-        (
-            "5 soft line breaks typed as paragraph breaks",
-            "5 line breaks inside a paragraph will be typed as new paragraphs.",
-        ),
-        (
-            "1 footnote/comment reference not reproduced (dropped)",
-            "1 footnote or comment marker will be left out.",
-        ),
-        (
-            "2 footnote/comment references not reproduced (dropped)",
-            "2 footnote or comment markers will be left out.",
-        ),
-        (
-            "this document uses custom fonts, sizes, or colours, which are not reproduced",
-            "Custom fonts, text sizes and colours will not be reproduced.",
-        ),
-    ],
-)
+
+@pytest.mark.parametrize(("message", "expected"), IMPORT_SENTENCES)
 def test_each_importer_message_becomes_a_plain_sentence(message, expected):
     assert explain_import_warning(message) == expected
     assert is_known_import_warning(message)

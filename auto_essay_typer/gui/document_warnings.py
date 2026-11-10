@@ -24,8 +24,10 @@ the editor, so that is what the sentences say.
 
 The importers' messages are matched with one rule per kind of loss. The kinds are
 ``importers.notes.NoteKind``, the importers' own list, and a rule is an anchored
-pattern for the message they render for it plus the sentence it becomes.
-``adapt_document``'s messages are matched with one anchored pattern per template.
+pattern for the message they render for it plus the sentence it becomes; there must be
+one for every kind, and ``tests/gui/test_import_note_rules.py`` fails, saying what to
+add, when there is not. ``adapt_document``'s messages are matched with one anchored
+pattern per template.
 
 A message that matches none of the patterns is not lost: an importer's is shown as it
 was worded, and an adaptation's with the jargon removed and the editor named, so the
@@ -105,8 +107,20 @@ def _say_image(match: re.Match[str]) -> str:
 
 
 def _say_table(match: re.Match[str]) -> str:
+    """A table is typed without its grid, cell by cell.
+
+    The Word reader keeps a cell's paragraphs as they are, so there is nothing more to say.
+    The Google Docs reader types them as ordinary text, which its importer message says with
+    an extra clause (captured as ``lost``), and that is a loss the person can act on.
+    """
     count = _count(match)
-    return f"{count} {_plural(count, 'table')} will be typed as plain paragraphs, one per cell"
+    sentence = (
+        f"{count} {_plural(count, 'table')} will be typed without {_plural(count, 'its', 'their')} "
+        "rows and columns: each cell becomes one or more paragraphs, row by row"
+    )
+    if match.group("lost"):
+        sentence += ". Headings, lists and alignment inside a cell are not kept"
+    return sentence
 
 
 def _say_rule(match: re.Match[str]) -> str:
@@ -123,8 +137,53 @@ def _say_break(match: re.Match[str]) -> str:
 
 
 def _say_footnote(match: re.Match[str]) -> str:
+    """A note is left out whole: the marker in the text *and* what the note says.
+
+    Only the marker is easy to picture, so saying just that sends nobody to look for the
+    citation or the comment that went with it.
+    """
     count = _count(match)
-    return f"{count} footnote or comment {_plural(count, 'marker')} will be left out"
+    return (
+        f"{count} {_plural(count, 'footnote, endnote or comment', 'footnotes, endnotes or comments')} "
+        f"will be left out, both the {_plural(count, 'marker', 'markers')} and "
+        f"{_plural(count, 'the text of the note', 'the text of each note')}. "
+        f"If you need {_plural(count, 'it', 'them')}, add {_plural(count, 'it', 'them')} back by hand"
+    )
+
+
+def _say_symbol(match: re.Match[str]) -> str:
+    """Word's Insert > Symbol, when it picks from a symbol font such as Wingdings or Symbol.
+
+    A character from an ordinary font is plain text and is typed; one from a symbol font is a
+    code only that font understands, which no keystroke reproduces.
+    """
+    count = _count(match)
+    return (
+        f"{count} {_plural(count, 'symbol from a symbol font', 'symbols from symbol fonts')}, "
+        f"such as Wingdings, will be left out, because {_plural(count, 'it', 'they')} can't be typed"
+    )
+
+
+def _say_text_box(match: re.Match[str]) -> str:
+    """A text box is left out with its words, which the importer quotes so they can be found."""
+    count = _count(match)
+    boxes = _plural(count, "text box", "text boxes")
+    quoted = match.group("quoted")
+    if not quoted:
+        return f"{count} {boxes} will be left out"
+    return (
+        f"{count} {boxes} will be left out, with the text in {_plural(count, 'it', 'them')}: {quoted}. "
+        "If you need that text, add it by hand"
+    )
+
+
+def _say_tracked_changes(match: re.Match[str]) -> str:
+    """The app chose which version of a document with tracked changes to type; say so."""
+    return (
+        "This document has tracked changes. It will be typed as the final version: added text is "
+        "kept and deleted text is left out. To type a different version, accept or reject the "
+        "changes in Word first"
+    )
 
 
 def _say_style(match: re.Match[str]) -> str:
@@ -137,7 +196,13 @@ def _say_style(match: re.Match[str]) -> str:
 _IMPORT_RULES: dict[NoteKind, _ImportRule] = {
     NoteKind.LINK: _ImportRule(re.compile(r"^(\d+) links? typed as plain text$"), _say_link),
     NoteKind.IMAGE: _ImportRule(re.compile(r"^(\d+) images? not reproduced \(dropped\)$"), _say_image),
-    NoteKind.TABLE: _ImportRule(re.compile(r"^(\d+) tables? flattened to one paragraph per cell$"), _say_table),
+    NoteKind.TABLE: _ImportRule(
+        re.compile(
+            r"^(\d+) tables? flattened: each cell typed as one or more paragraphs, row by row"
+            r"(?P<lost>, losing any heading style, alignment or list inside a cell)?$"
+        ),
+        _say_table,
+    ),
     NoteKind.RULE: _ImportRule(
         re.compile(r"^(\d+) horizontal rules? not reproduced \(dropped\)$"), _say_rule
     ),
@@ -145,7 +210,26 @@ _IMPORT_RULES: dict[NoteKind, _ImportRule] = {
         re.compile(r"^(\d+) soft line breaks? typed as paragraph breaks?$"), _say_break
     ),
     NoteKind.FOOTNOTE: _ImportRule(
-        re.compile(r"^(\d+) footnote/comment references? not reproduced \(dropped\)$"), _say_footnote
+        re.compile(
+            r"^(\d+) footnote/endnote/comment references? dropped, along with the text of the note$"
+        ),
+        _say_footnote,
+    ),
+    NoteKind.SYMBOL: _ImportRule(re.compile(r"^(\d+) special symbols? will be left out$"), _say_symbol),
+    NoteKind.TEXT_BOX: _ImportRule(
+        # DOTALL: a quoted excerpt is a text box's own words and may hold a line break.
+        re.compile(
+            r"^(\d+) text (?:box's|boxes') content will not be reproduced(?:: (?P<quoted>.+))?$",
+            re.DOTALL,
+        ),
+        _say_text_box,
+    ),
+    NoteKind.TRACKED_CHANGES: _ImportRule(
+        re.compile(
+            r"^this document had tracked changes; it is typed as the final version, "
+            r"with the edits accepted and the deleted text left out$"
+        ),
+        _say_tracked_changes,
     ),
     NoteKind.STYLE: _ImportRule(
         re.compile(r"^this document uses custom fonts, sizes, or colours, which are not reproduced$"),

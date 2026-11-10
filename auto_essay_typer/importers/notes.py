@@ -69,7 +69,9 @@ _COUNTED_TEMPLATES: dict[NoteKind, str] = {
     NoteKind.IMAGE: "{n} image{s} not reproduced (dropped)",
     NoteKind.RULE: "{n} horizontal rule{s} not reproduced (dropped)",
     NoteKind.BREAK: "{n} soft line break{s} typed as paragraph break{s}",
-    NoteKind.FOOTNOTE: "{n} footnote/comment reference{s} not reproduced (dropped)",
+    NoteKind.FOOTNOTE: (
+        "{n} footnote/endnote/comment reference{s} dropped, along with the text of the note"
+    ),
     NoteKind.SYMBOL: "{n} special symbol{s} will be left out",
 }
 
@@ -82,13 +84,24 @@ _TRACKED_CHANGES_MESSAGE = (
 
 _STYLE_MESSAGE = "this document uses custom fonts, sizes, or colours, which are not reproduced"
 
+#: What a reader that cannot keep a cell's paragraph formatting adds to its table message.
+_TABLE_FORMATTING_LOST = ", losing any heading style, alignment or list inside a cell"
+
 
 def _table_message(count: int, *, keeps_paragraph_formatting: bool) -> str:
     """Say a table's grid is gone and its cells are typed one after another.
 
-    ``keeps_paragraph_formatting`` is accepted here and does not change the wording yet.
+    Every cell becomes one or more paragraphs: a cell with several paragraphs (or a
+    line break) keeps them apart rather than running them together, and an empty cell
+    still stands for a line the reader sees. Whether a paragraph in a cell keeps its own
+    heading style, alignment and list is the importer's to say, because it differs:
+    Word's reader does and the Google Docs reader does not.
     """
-    return f"{count} table{'' if count == 1 else 's'} flattened to one paragraph per cell"
+    message = (
+        f"{count} table{'' if count == 1 else 's'} flattened: "
+        "each cell typed as one or more paragraphs, row by row"
+    )
+    return message if keeps_paragraph_formatting else message + _TABLE_FORMATTING_LOST
 
 
 def _text_box_message(excerpts: Sequence[str]) -> str:
