@@ -94,8 +94,9 @@ def test_full_fixture_produces_exact_expected_document():
     assert warnings == (
         "1 link typed as plain text",
         "1 image not reproduced (dropped)",
-        "1 table flattened to one paragraph per cell",
-        "1 footnote/comment reference not reproduced (dropped)",
+        "1 table flattened: each cell typed as one or more paragraphs, row by row, "
+        "losing any heading style, alignment or list inside a cell",
+        "1 footnote/endnote/comment reference dropped, along with the text of the note",
         "this document uses custom fonts, sizes, or colours, which are not reproduced",
     )
 
@@ -451,7 +452,7 @@ def test_multiple_images_warning_is_aggregated_with_a_count():
 # --- tables --------------------------------------------------------------------------
 
 
-def test_table_flattened_to_one_paragraph_per_cell_reading_order():
+def test_table_flattened_with_its_cells_in_reading_order():
     html = (
         "<table><tbody>"
         "<tr><td>A1</td><td>B1</td></tr>"
@@ -460,7 +461,11 @@ def test_table_flattened_to_one_paragraph_per_cell_reading_order():
     )
     doc, warnings = parse_gdocs_html(html)
     assert [p.text for p in doc.paragraphs] == ["A1", "B1", "A2", "B2"]
-    assert any("table" in w for w in warnings)
+    (table_warning,) = [w for w in warnings if "table" in w]
+    # A cell is one or more paragraphs. "One paragraph per cell" stopped being true when a
+    # cell's own paragraphs and line breaks were kept apart (tests below).
+    assert "one or more paragraphs" in table_warning
+    assert "one paragraph per cell" not in table_warning
 
 
 def test_table_without_tbody_wrapper_still_flattens():
@@ -507,6 +512,26 @@ def test_a_nested_table_inside_a_cell_keeps_its_cells_apart():
     table_warnings = [w for w in warnings if "table" in w]
     assert len(table_warnings) == 1
     assert "2" in table_warnings[0]
+
+
+def test_a_heading_a_list_and_alignment_inside_a_cell_are_typed_as_ordinary_text_and_the_message_says_so():
+    """This reader types a cell's content from its inline text alone, so those are lost.
+
+    The message says so (``keeps_paragraph_formatting=False``). If this reader is ever
+    taught to keep them, this test fails; flip the flag in ``_render_warnings`` with it.
+    """
+    html = (
+        "<table><tr><td><h2>Cell heading</h2>"
+        '<p style="text-align:center">centered</p><ul><li>bullet</li></ul></td></tr></table>'
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["Cell heading", "centered", "bullet"]
+    for paragraph in doc.paragraphs:
+        assert paragraph.style is ParagraphStyle.NORMAL
+        assert paragraph.alignment is Alignment.LEFT
+        assert paragraph.list_kind is None
+    (table_warning,) = [w for w in warnings if "table" in w]
+    assert "losing any heading style, alignment or list inside a cell" in table_warning
 
 
 def test_an_empty_cell_still_produces_a_paragraph():
@@ -689,6 +714,17 @@ def test_a_footnotes_block_shaped_as_google_writes_it_is_not_typed_as_body_text(
     assert any("footnote" in w for w in warnings)
 
 
+def test_the_footnote_message_says_the_notes_own_text_is_dropped_with_its_marker():
+    html = (
+        '<p>a claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> continues</p>'
+        '<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> Smith, p. 14.</span></p></div>'
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert "Smith" not in doc.plain_text()
+    (footnote_warning,) = [w for w in warnings if "footnote" in w]
+    assert "along with the text of the note" in footnote_warning
+
+
 def test_one_footnote_is_reported_once_not_once_per_end_of_it():
     # The marker in the text and the note itself are two halves of one
     # footnote, so counting both says "2 footnotes" about a document with one.
@@ -736,7 +772,7 @@ def test_the_footnoted_export_fixture_types_the_body_and_reports_the_notes():
             Paragraph(runs=(Run("The second claim rests on another."),)),
         )
     )
-    assert warnings == ("2 footnote/comment references not reproduced (dropped)",)
+    assert warnings == ("2 footnote/endnote/comment references dropped, along with the text of the note",)
 
 
 # --- non-default fonts / sizes / colours: one aggregated warning ------------------------

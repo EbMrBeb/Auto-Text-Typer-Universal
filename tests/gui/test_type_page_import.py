@@ -171,8 +171,11 @@ def test_the_panel_lists_what_the_importer_could_not_read_in_plain_language(qtbo
     text = " ".join(lines)
     assert "1 link will be typed as plain text" in text
     assert "1 image will be left out" in text
-    assert "1 table will be typed as plain paragraphs" in text
-    assert "footnote or comment" in text
+    assert "1 table will be typed without its rows and columns" in text
+    # The Google Docs reader loses a cell's headings, lists and alignment, and says so.
+    assert "Headings, lists and alignment inside a cell are not kept" in text
+    # A footnote's text goes with its marker, and the panel says both.
+    assert "1 footnote, endnote or comment will be left out, both the marker and the text of the note" in text
     assert "Custom fonts, text sizes and colours" in text
     assert not any("(dropped)" in line or "keymap" in line for line in lines)
 

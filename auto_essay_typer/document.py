@@ -184,6 +184,8 @@ class ImportReport:
     ``warnings`` names every piece of layout that was dropped rather than
     typed -- images, tables, fonts, sizes, colours, links, footnotes,
     comments, soft line breaks -- so it is always reported, never silently lost.
+    ``importers.notes.NoteKind`` is the complete list of what an importer can
+    report, and the one place each is worded.
     """
 
     source: str

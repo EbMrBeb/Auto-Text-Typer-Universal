@@ -32,7 +32,13 @@ _W = (
 )
 
 
-def _build_docx(body_xml: str, styles_xml: str | None = None, numbering_xml: str | None = None) -> bytes:
+def _build_docx(
+    body_xml: str,
+    styles_xml: str | None = None,
+    numbering_xml: str | None = None,
+    parts: dict[str, str] | None = None,
+) -> bytes:
+    """``parts`` are further files in the package (``word/footnotes.xml``...) by name."""
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
@@ -57,6 +63,8 @@ def _build_docx(body_xml: str, styles_xml: str | None = None, numbering_xml: str
                 f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                 f"<w:numbering {_W}>{numbering_xml}</w:numbering>",
             )
+        for name, xml in (parts or {}).items():
+            zf.writestr(name, f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{xml}')
     return buf.getvalue()
 
 
@@ -654,6 +662,40 @@ def test_a_note_reference_is_reported_rather_than_dropped_in_silence(reference):
     assert any("footnote" in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    ("reference", "part_name", "part_xml"),
+    [
+        (
+            '<w:footnoteReference w:id="2"/>',
+            "word/footnotes.xml",
+            f'<w:footnotes {_W}><w:footnote w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+            "</w:footnote></w:footnotes>",
+        ),
+        (
+            '<w:endnoteReference w:id="2"/>',
+            "word/endnotes.xml",
+            f'<w:endnotes {_W}><w:endnote w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+            "</w:endnote></w:endnotes>",
+        ),
+        (
+            '<w:commentReference w:id="2"/>',
+            "word/comments.xml",
+            f'<w:comments {_W}><w:comment w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+            "</w:comment></w:comments>",
+        ),
+    ],
+    ids=["footnote", "endnote", "comment"],
+)
+def test_a_notes_own_text_is_dropped_with_its_marker_and_the_message_says_so(reference, part_name, part_xml):
+    # The note lives in a part of the package this reader never opens, so its words are
+    # not typed anywhere -- not only the marker. The report has to say both.
+    body = f"<w:p><w:r><w:t>a claim</w:t></w:r><w:r>{reference}</w:r></w:p>"
+    doc, warnings = parse_docx(_build_docx(body, parts={part_name: part_xml}))
+    assert "Smith" not in doc.plain_text()
+    (note_warning,) = [w for w in warnings if "footnote" in w]
+    assert "along with the text of the note" in note_warning
+
+
 def test_a_symbol_is_reported_rather_than_dropped_in_silence():
     body = '<w:p><w:r><w:t>bullet </w:t><w:sym w:font="Symbol" w:char="F0B7"/></w:r></w:p>'
     doc, warnings = parse_docx(_build_docx(body))
@@ -697,7 +739,7 @@ def test_hyperlink_run_keeps_its_own_formatting():
 # --- tables -----------------------------------------------------------------------
 
 
-def test_table_flattened_to_one_paragraph_per_cell_in_reading_order():
+def test_table_flattened_with_its_cells_in_reading_order():
     body = (
         "<w:tbl>"
         "<w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>"
@@ -708,7 +750,11 @@ def test_table_flattened_to_one_paragraph_per_cell_in_reading_order():
     )
     doc, warnings = parse_docx(_build_docx(body))
     assert [p.text for p in doc.paragraphs] == ["A1", "B1", "A2", "B2"]
-    assert any("table" in w for w in warnings)
+    (table_warning,) = [w for w in warnings if "table" in w]
+    # A cell is one or more paragraphs. "One paragraph per cell" stopped being true when a
+    # cell's own paragraphs and line breaks were kept apart (tests below).
+    assert "one or more paragraphs" in table_warning
+    assert "one paragraph per cell" not in table_warning
 
 
 def test_table_between_paragraphs_preserves_reading_order():
@@ -778,9 +824,13 @@ def test_a_cell_keeps_the_paragraph_style_and_alignment_inside_it():
         "<w:r><w:t>Cell heading</w:t></w:r></w:p>"
         "</w:tc></w:tr></w:tbl>"
     )
-    doc, _ = parse_docx(_build_docx(body))
+    doc, warnings = parse_docx(_build_docx(body))
     assert doc.paragraphs[0].style == ParagraphStyle.HEADING_2
     assert doc.paragraphs[0].alignment == Alignment.CENTER
+    # So the message does not say the formatting is lost (this reader sets
+    # ``keeps_paragraph_formatting=True``); the Google Docs reader's does.
+    (table_warning,) = [w for w in warnings if "table" in w]
+    assert "losing" not in table_warning
 
 
 def test_a_cell_whose_rows_sit_in_a_content_control_is_kept():

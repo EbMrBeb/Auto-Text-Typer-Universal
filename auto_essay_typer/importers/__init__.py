@@ -28,12 +28,14 @@ from auto_essay_typer.importers.google import (
     load_from_google,
     parse_google_url,
 )
+from auto_essay_typer.importers.notes import NoteKind
 from auto_essay_typer.importers.plain import load_plain_text
 
 __all__ = [
     "load_document",
     "Document",
     "ImportReport",
+    "NoteKind",
     "DocumentImportError",
     "AccessDeniedError",
     "NotFoundError",

@@ -44,6 +44,7 @@ from auto_essay_typer.document import (
     Run,
     TextStyle,
 )
+from auto_essay_typer.importers.notes import NoteKind, render
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -206,14 +207,15 @@ def _run_styles(rpr: ET.Element | None) -> frozenset[TextStyle]:
 class _ParseState:
     """Everything the walk accumulates besides the paragraphs themselves.
 
-    ``warnings`` counts the losses a number is enough for. The other two are
+    ``warnings`` counts the losses a number is enough for, each under a
+    :class:`~auto_essay_typer.importers.notes.NoteKind`. The other two are
     the losses a number is not enough for: whether the document carried
     tracked changes at all (the user needs to know a choice was made for
     them), and enough of each text box's words that they can tell which part
     of their document will be missing.
     """
 
-    warnings: Counter[str] = field(default_factory=Counter)
+    warnings: Counter[NoteKind] = field(default_factory=Counter)
     tracked_changes: bool = False
     text_box_excerpts: list[str] = field(default_factory=list)
 
@@ -335,12 +337,12 @@ def _record_graphic(el: ET.Element, state: _ParseState) -> None:
             if len(branch):
                 _record_graphic(branch, state)
                 return
-        state.warnings["image"] += 1
+        state.warnings[NoteKind.IMAGE] += 1
         return
 
     text_boxes = el.findall(f".//{_w('txbxContent')}")
     if not text_boxes:
-        state.warnings["image"] += 1
+        state.warnings[NoteKind.IMAGE] += 1
         return
     for text_box in text_boxes:
         state.text_box_excerpts.append(_excerpt(_element_text(text_box)))
@@ -381,9 +383,9 @@ def _run_text(run_el: ET.Element, state: _ParseState) -> str:
             # A character from a specific symbol font, addressed by a code
             # point that means nothing outside it -- there is no keystroke
             # that reproduces it.
-            state.warnings["symbol"] += 1
+            state.warnings[NoteKind.SYMBOL] += 1
         elif tag in _NOTE_REFERENCE_TAGS:
-            state.warnings["note"] += 1
+            state.warnings[NoteKind.FOOTNOTE] += 1
     return "".join(parts)
 
 
@@ -401,7 +403,7 @@ def _iter_runs(container: ET.Element, state: _ParseState):
         if tag == _w("r"):
             yield child
         elif tag == _w("hyperlink"):
-            state.warnings["link"] += 1
+            state.warnings[NoteKind.LINK] += 1
             yield from _iter_runs(child, state)
         elif tag in _ACCEPTED_REVISIONS:
             state.tracked_changes = True
@@ -475,7 +477,7 @@ def _parse_paragraph(p_el: ET.Element, names: dict[str, str], numbering: _Number
         # this run or between this run and the one before it.
         for index, segment in enumerate(_run_text(run_el, state).split(_BREAK)):
             if index:
-                state.warnings["break"] += 1
+                state.warnings[NoteKind.BREAK] += 1
                 finished.append(current.to_paragraph())
                 current = current.clone_empty()
             current.append(segment, styles)
@@ -514,7 +516,7 @@ def _flatten_table(tbl_el: ET.Element, names: dict[str, str], numbering: _Number
     invent a word that is in no document, which is the one thing a flattened
     table must not do.
     """
-    state.warnings["table"] += 1
+    state.warnings[NoteKind.TABLE] += 1
     paragraphs: list[Paragraph] = []
     for cell in _iter_cells(tbl_el):
         cell_paragraphs = _parse_block_content(cell, names, numbering, state)
@@ -613,60 +615,20 @@ def parse_docx(data: bytes) -> tuple[Document, tuple[str, ...]]:
 
     body = _find(document_root, "body")
     paragraphs = _parse_block_content(body, names, numbering, state)
-    warnings = _render_warnings(state.warnings) + _render_detail_warnings(state)
 
-    return Document(tuple(paragraphs)), warnings
+    return Document(tuple(paragraphs)), _render_warnings(state)
 
 
-def _text_box_message(excerpts: list[str]) -> str:
-    """Name the text boxes whose content is missing, quoting each one.
+def _render_warnings(state: _ParseState) -> tuple[str, ...]:
+    """Everything the walk could not turn into keystrokes, as the messages the report carries.
 
-    The quoted words are the point of the message: "a text box will not be
-    reproduced" on its own leaves the user hunting through their document for
-    which part of it is gone.
+    The wording is in :mod:`~auto_essay_typer.importers.notes`, shared with the Google
+    Docs reader. A paragraph inside a table cell is read by the same code as any other,
+    so it keeps its own style, alignment and list (``keeps_paragraph_formatting``).
     """
-    noun = (
-        "1 text box's content"
-        if len(excerpts) == 1
-        else f"{len(excerpts)} text boxes' content"
+    return render(
+        state.warnings,
+        keeps_paragraph_formatting=True,
+        text_box_excerpts=state.text_box_excerpts,
+        tracked_changes=state.tracked_changes,
     )
-    quoted = ", ".join(f'"{excerpt}"' for excerpt in excerpts if excerpt)
-    if not quoted:
-        return f"{noun} will not be reproduced"
-    return f"{noun} will not be reproduced: {quoted}"
-
-
-def _render_warnings(counts: Counter[str]) -> tuple[str, ...]:
-    """The losses a count is enough to describe, one message per kind."""
-    messages: list[str] = []
-
-    def add(count: int, template: str) -> None:
-        if count:
-            messages.append(template.format(n=count, s="" if count == 1 else "s"))
-
-    add(counts["link"], "{n} link{s} typed as plain text")
-    add(counts["image"], "{n} image{s} not reproduced (dropped)")
-    add(counts["table"], "{n} table{s} flattened to one paragraph per cell")
-    add(counts["break"], "{n} soft line break{s} typed as paragraph break{s}")
-    add(counts["note"], "{n} footnote/comment reference{s} not reproduced (dropped)")
-    add(counts["symbol"], "{n} special symbol{s} will be left out")
-    return tuple(messages)
-
-
-def _render_detail_warnings(state: _ParseState) -> tuple[str, ...]:
-    """The two losses a count is *not* enough to describe.
-
-    A text box needs its own words quoted, or the user cannot tell which part
-    of their document is missing. Tracked changes need saying once however
-    many there were, because what matters is not the number but that a
-    choice between two versions was made on the user's behalf.
-    """
-    messages: list[str] = []
-    if state.text_box_excerpts:
-        messages.append(_text_box_message(state.text_box_excerpts))
-    if state.tracked_changes:
-        messages.append(
-            "this document had tracked changes; it is typed as the final version, "
-            "with the edits accepted and the deleted text left out"
-        )
-    return tuple(messages)
