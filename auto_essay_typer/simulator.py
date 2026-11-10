@@ -11,12 +11,13 @@ feature: it is the single source of truth for how a blank document actually
 responds to keystrokes and formatting commands, and
 ``planner.plan_document`` must track this exact same state machine so that a
 plan it builds is guaranteed reproducible. It replays abstract ``FormatOp``s
-and never sees a keymap, so one model answers for every target editor: Google
-Docs is the editor whose behaviour that model was written from (the project's
-"Google Docs editing model") and the reference the document format was
-designed against, not the only editor it describes. Narrowing a document to
-what a given target can actually express happens earlier, in
-``keymaps.adapt_document``, not here.
+and never sees a keymap, so one model answers for every target editor. That
+model is the Google Docs editing model: Google Docs is the editor whose
+behaviour it was written from and the reference the document format was
+designed against, not the only editor it describes. Its rules are the code in
+this module, not a separate document. Narrowing a document to what a given
+target can actually express happens earlier, in ``keymaps.adapt_document``,
+not here.
 """
 
 from collections.abc import Iterable
@@ -211,8 +212,8 @@ def simulate_document(actions: Iterable[Action]) -> Document:
     A blank Google Doc starts as one empty NORMAL, left-aligned paragraph
     with no list and no insertion styles, and the cursor never moves except
     to follow the last character typed -- nothing in this project's action
-    stream ever repositions it. See the project's "Google Docs editing
-    model" for the full rule set this function implements; the short version:
+    stream ever repositions it. The code in this module is the complete rule
+    set. In short:
     ``KeyPress`` inserts (or, for ``"\\n"``, starts a new paragraph that
     inherits alignment and list from the one before it), ``Backspace``
     deletes within the current paragraph only, and ``Format`` changes either
