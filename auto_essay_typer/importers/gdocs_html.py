@@ -54,6 +54,7 @@ from auto_essay_typer.document import (
     Run,
     TextStyle,
 )
+from auto_essay_typer.importers.notes import NoteKind, render
 
 # --- a minimal DOM ------------------------------------------------------------
 #
@@ -216,7 +217,7 @@ class _ParseContext:
     """
 
     class_props: dict[str, dict[str, str]]
-    warnings: Counter[str] = field(default_factory=Counter)
+    warnings: Counter[NoteKind] = field(default_factory=Counter)
     non_default_style: bool = False
     note_keys: set[tuple[str, str]] = field(default_factory=set)
 
@@ -230,7 +231,7 @@ class _ParseContext:
             if key in self.note_keys:
                 return
             self.note_keys.add(key)
-        self.warnings["footnote"] += 1
+        self.warnings[NoteKind.FOOTNOTE] += 1
 
     def resolve_props(self, node: _Node) -> dict[str, str]:
         """This element's effective CSS: its classes' declarations, then its
@@ -475,9 +476,9 @@ def _extract_inline(node: _Node, inherited: frozenset[TextStyle], ctx: _ParseCon
         if tag == "br":
             pieces.append(_Split.SOFT_BREAK)
         elif tag == "img":
-            ctx.warnings["image"] += 1
+            ctx.warnings[NoteKind.IMAGE] += 1
         elif tag == "hr":
-            ctx.warnings["hr"] += 1
+            ctx.warnings[NoteKind.RULE] += 1
         elif tag in _NON_CONTENT_TAGS:
             # A <style> or <script> that ended up inside body content: its
             # text is machinery, and typing it would put CSS in the essay.
@@ -487,12 +488,12 @@ def _extract_inline(node: _Node, inherited: frozenset[TextStyle], ctx: _ParseCon
             # with no keystroke behind it, so it is reported, not typed.
             ctx.add_note(note_key)
         elif tag == "a":
-            ctx.warnings["link"] += 1
+            ctx.warnings[NoteKind.LINK] += 1
             child_styles = inherited | _text_styles_from_props(ctx.resolve_props(child))
             pieces.extend(_extract_inline(child, child_styles, ctx))
         elif tag in _BLOCK_TAGS:
             if tag == "table":
-                ctx.warnings["table"] += 1
+                ctx.warnings[NoteKind.TABLE] += 1
             child_styles = inherited | _text_styles_from_props(ctx.resolve_props(child))
             pieces.append(_Split.BLOCK)
             pieces.extend(_extract_inline(child, child_styles, ctx))
@@ -532,7 +533,7 @@ def _group_pieces(
     pending_block_edge = False
     for piece in pieces:
         if piece is _Split.SOFT_BREAK:
-            ctx.warnings["break"] += 1
+            ctx.warnings[NoteKind.BREAK] += 1
             groups.append([])
             pending_block_edge = False
         elif piece is _Split.BLOCK:
@@ -609,7 +610,7 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
     boundaries. Run together they would fuse the end of one line onto the
     start of the next and invent a word that is in no document.
     """
-    ctx.warnings["table"] += 1
+    ctx.warnings[NoteKind.TABLE] += 1
     cells: list[Paragraph] = []
 
     def visit(container: _Node) -> None:
@@ -689,7 +690,7 @@ def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None
         return
 
     if tag == "hr":
-        ctx.warnings["hr"] += 1
+        ctx.warnings[NoteKind.RULE] += 1
         return
 
     # Anything else that holds block content: the plain <div> Google wraps
@@ -759,25 +760,18 @@ def _walk_body(body: _Node, ctx: _ParseContext) -> list[Paragraph]:
 
 
 def _render_warnings(ctx: _ParseContext) -> tuple[str, ...]:
-    counts = ctx.warnings
-    messages: list[str] = []
+    """Everything the walk could not turn into keystrokes, as the messages the report carries.
 
-    def add(count: int, template: str) -> None:
-        if count:
-            messages.append(template.format(n=count, s="" if count == 1 else "s"))
-
-    add(counts["link"], "{n} link{s} typed as plain text")
-    add(counts["image"], "{n} image{s} not reproduced (dropped)")
-    add(counts["table"], "{n} table{s} flattened to one paragraph per cell")
-    add(counts["hr"], "{n} horizontal rule{s} not reproduced (dropped)")
-    add(counts["break"], "{n} soft line break{s} typed as paragraph break{s}")
-    add(counts["footnote"], "{n} footnote/comment reference{s} not reproduced (dropped)")
-
-    if ctx.non_default_style:
-        messages.append(
-            "this document uses custom fonts, sizes, or colours, which are not reproduced"
-        )
-    return tuple(messages)
+    The wording is in :mod:`~auto_essay_typer.importers.notes`, shared with the Word
+    reader. A table cell's content is read as inline text alone (``_flatten_table``), so a
+    heading, an alignment or a list inside a cell comes out as ordinary text: this reader
+    does not keep a paragraph's formatting there (``keeps_paragraph_formatting``).
+    """
+    return render(
+        ctx.warnings,
+        keeps_paragraph_formatting=False,
+        custom_style=ctx.non_default_style,
+    )
 
 
 # --- public entry points ---------------------------------------------------------

@@ -22,11 +22,15 @@ it), and an editor like Word does have list shortcuts. What is always true, and 
 the person can act on from the Advanced page, is that *no shortcut is set up* for
 the editor, so that is what the sentences say.
 
-The library messages are matched with one anchored pattern per template. A message
-that matches none of them (a template added later) is not lost: it is shown with the
-jargon removed and the editor named, so the panel always lists everything the
-libraries reported. :func:`is_known_import_warning` and
-:func:`is_known_adaptation_warning` say whether a message matched, so tests can tell
+The importers' messages are matched with one rule per kind of loss. The kinds are
+``importers.notes.NoteKind``, the importers' own list, and a rule is an anchored
+pattern for the message they render for it plus the sentence it becomes.
+``adapt_document``'s messages are matched with one anchored pattern per template.
+
+A message that matches none of the patterns is not lost: an importer's is shown as it
+was worded, and an adaptation's with the jargon removed and the editor named, so the
+panel always lists everything the libraries reported. :func:`is_known_import_warning`
+and :func:`is_known_adaptation_warning` say whether a message matched, so tests can tell
 a translation from that fallback.
 """
 
@@ -34,9 +38,10 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from auto_essay_typer.importers.notes import NoteKind
 from auto_essay_typer.targets import TargetApp
 
 _PLAIN_TEXT_TARGET_ID = "plain-text"
@@ -67,51 +72,106 @@ def _sentence(text: str) -> str:
 
 # --- what the importers report ------------------------------------------------------------------
 
-#: (pattern, kind) pairs for the importers' messages, checked in order. Each pattern is
-#: anchored and captures the leading count where there is one.
-_IMPORT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^(\d+) links? typed as plain text$"), "link"),
-    (re.compile(r"^(\d+) images? not reproduced \(dropped\)$"), "image"),
-    (re.compile(r"^(\d+) tables? flattened to one paragraph per cell$"), "table"),
-    (re.compile(r"^(\d+) horizontal rules? not reproduced \(dropped\)$"), "rule"),
-    (re.compile(r"^(\d+) soft line breaks? typed as paragraph breaks?$"), "break"),
-    (re.compile(r"^(\d+) footnote/comment references? not reproduced \(dropped\)$"), "footnote"),
-    (
-        re.compile(r"^this document uses custom fonts, sizes, or colours, which are not reproduced$"),
-        "style",
+
+@dataclass(frozen=True)
+class _ImportRule:
+    """How one kind of importer message is recognised, and what it is said to mean.
+
+    ``pattern`` is anchored to the exact message ``importers/notes.py`` renders for the
+    kind, and captures the leading count as group 1 where there is one. ``say`` turns a
+    match into the sentence the person reads, without the capital letter and full stop
+    that :func:`_sentence` adds.
+    """
+
+    pattern: re.Pattern[str]
+    say: Callable[[re.Match[str]], str]
+
+
+def _count(match: re.Match[str]) -> int:
+    return int(match.group(1))
+
+
+def _say_link(match: re.Match[str]) -> str:
+    count = _count(match)
+    return (
+        f"{count} {_plural(count, 'link')} will be typed as plain text, "
+        f"not as {_plural(count, 'a clickable link', 'clickable links')}"
+    )
+
+
+def _say_image(match: re.Match[str]) -> str:
+    count = _count(match)
+    return f"{count} {_plural(count, 'image')} will be left out, because images can't be typed"
+
+
+def _say_table(match: re.Match[str]) -> str:
+    count = _count(match)
+    return f"{count} {_plural(count, 'table')} will be typed as plain paragraphs, one per cell"
+
+
+def _say_rule(match: re.Match[str]) -> str:
+    count = _count(match)
+    return f"{count} horizontal {_plural(count, 'line')} will be left out"
+
+
+def _say_break(match: re.Match[str]) -> str:
+    count = _count(match)
+    return (
+        f"{count} line {_plural(count, 'break')} inside a paragraph will be typed as "
+        f"{_plural(count, 'a new paragraph', 'new paragraphs')}"
+    )
+
+
+def _say_footnote(match: re.Match[str]) -> str:
+    count = _count(match)
+    return f"{count} footnote or comment {_plural(count, 'marker')} will be left out"
+
+
+def _say_style(match: re.Match[str]) -> str:
+    return "Custom fonts, text sizes and colours will not be reproduced"
+
+
+#: One rule for every :class:`~auto_essay_typer.importers.notes.NoteKind`, in that order.
+#: A kind with no rule here is shown in the importer's own wording, so
+#: ``tests/gui/test_import_note_rules.py`` fails until it has one.
+_IMPORT_RULES: dict[NoteKind, _ImportRule] = {
+    NoteKind.LINK: _ImportRule(re.compile(r"^(\d+) links? typed as plain text$"), _say_link),
+    NoteKind.IMAGE: _ImportRule(re.compile(r"^(\d+) images? not reproduced \(dropped\)$"), _say_image),
+    NoteKind.TABLE: _ImportRule(re.compile(r"^(\d+) tables? flattened to one paragraph per cell$"), _say_table),
+    NoteKind.RULE: _ImportRule(
+        re.compile(r"^(\d+) horizontal rules? not reproduced \(dropped\)$"), _say_rule
     ),
-)
+    NoteKind.BREAK: _ImportRule(
+        re.compile(r"^(\d+) soft line breaks? typed as paragraph breaks?$"), _say_break
+    ),
+    NoteKind.FOOTNOTE: _ImportRule(
+        re.compile(r"^(\d+) footnote/comment references? not reproduced \(dropped\)$"), _say_footnote
+    ),
+    NoteKind.STYLE: _ImportRule(
+        re.compile(r"^this document uses custom fonts, sizes, or colours, which are not reproduced$"),
+        _say_style,
+    ),
+}
 
 
-def _match_import(message: str) -> tuple[str, int] | None:
+def import_rule_kinds() -> frozenset[NoteKind]:
+    """The kinds of importer message this module words itself: one rule each."""
+    return frozenset(_IMPORT_RULES)
+
+
+def _match_import(message: str) -> tuple[NoteKind, re.Match[str]] | None:
     text = message.strip()
-    for pattern, kind in _IMPORT_RULES:
-        match = pattern.match(text)
+    for kind, rule in _IMPORT_RULES.items():
+        match = rule.pattern.match(text)
         if match:
-            return kind, int(match.group(1)) if match.groups() else 0
+            return kind, match
     return None
 
 
-def _import_sentence(kind: str, count: int) -> str:
-    if kind == "link":
-        return (
-            f"{count} {_plural(count, 'link')} will be typed as plain text, "
-            f"not as {_plural(count, 'a clickable link', 'clickable links')}"
-        )
-    if kind == "image":
-        return f"{count} {_plural(count, 'image')} will be left out, because images can't be typed"
-    if kind == "table":
-        return f"{count} {_plural(count, 'table')} will be typed as plain paragraphs, one per cell"
-    if kind == "rule":
-        return f"{count} horizontal {_plural(count, 'line')} will be left out"
-    if kind == "break":
-        return (
-            f"{count} line {_plural(count, 'break')} inside a paragraph will be typed as "
-            f"{_plural(count, 'a new paragraph', 'new paragraphs')}"
-        )
-    if kind == "footnote":
-        return f"{count} footnote or comment {_plural(count, 'marker')} will be left out"
-    return "Custom fonts, text sizes and colours will not be reproduced"
+def import_warning_kind(message: str) -> NoteKind | None:
+    """Which kind of loss ``message`` reports, or None if no rule recognises it."""
+    matched = _match_import(message)
+    return matched[0] if matched else None
 
 
 def is_known_import_warning(message: str) -> bool:
@@ -124,7 +184,8 @@ def explain_import_warning(message: str) -> str:
     matched = _match_import(message)
     if matched is None:
         return _sentence(message)
-    return _sentence(_import_sentence(*matched))
+    kind, match = matched
+    return _sentence(_IMPORT_RULES[kind].say(match))
 
 
 # --- what adapt_document reports -------------------------------------------------------------------
