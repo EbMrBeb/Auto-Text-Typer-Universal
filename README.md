@@ -21,12 +21,20 @@ Download the file for your platform from the repository's Releases page.
 
 ### macOS
 
-`AutoTextTyper-<version>-macOS-universal2.dmg`, or
-`AutoTextTyper-<version>-macOS-arm64.dmg` — the release build tries a universal2
-binary first and falls back to arm64 if any bundled native library is not a
-universal binary, so a release carries whichever one succeeded. A `.zip` of the
-same `.app` is published alongside each `.dmg`. Open the `.dmg` and drag **Auto
-Text Typer** to Applications.
+There is one download for each kind of Mac, so pick the one that matches yours:
+
+- `AutoTextTyper-<version>-macOS-arm64.dmg` for a Mac with Apple silicon (the M1
+  chip or newer).
+- `AutoTextTyper-<version>-macOS-x86_64.dmg` for an Intel Mac.
+
+Not sure which one you have? Open the Apple menu and choose **About This Mac**. A
+line that says **Chip** followed by a name starting with "Apple" means Apple
+silicon. A line that says **Processor** and mentions Intel means an Intel Mac.
+The arm64 download does not run on an Intel Mac.
+
+Both need **macOS 15 (Sequoia) or newer**. A `.zip` of the same `.app` is
+published alongside each `.dmg`. Open the `.dmg` and drag **Auto Text Typer** to
+Applications.
 
 The app is **not signed with an Apple Developer ID and is not notarised** — the
 build only applies an ad-hoc signature. macOS will therefore refuse to open it

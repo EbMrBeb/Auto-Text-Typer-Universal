@@ -15,7 +15,13 @@ auto-text-typer-gui = "auto_essay_typer.gui.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5", "pytest-qt>=4"]
-gui = ["PySide6-Essentials>=6.8"]
+# Capped just above the last release whose binaries were measured (6.11.2). The
+# macosx_N_0 tag on a PySide6 wheel only describes Qt's own libraries; the
+# binding modules in the same wheel are built for a newer macOS (15.0 in
+# 6.11.2), and that is the number LSMinimumSystemVersion in
+# packaging/pyinstaller/auto_text_typer.spec has to match. Re-measure, using
+# the command in that spec, before raising the cap.
+gui = ["PySide6-Essentials>=6.8,<6.11.3"]
 build = ["pyinstaller>=6.12", "Pillow>=10", "pyyaml>=6"]
 
 [build-system]

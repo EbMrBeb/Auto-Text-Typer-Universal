@@ -217,9 +217,18 @@ if sys.platform == "darwin":
             "CFBundleVersion": VERSION,
             "NSHighResolutionCapable": True,
             "LSApplicationCategoryType": "public.app-category.productivity",
-            # Qt 6.11 (the PySide6-Essentials line this project pins >=6.8
-            # into) requires macOS 13+; see the packaging report for the
-            # source. Bump this if/when the pinned Qt minor version changes.
-            "LSMinimumSystemVersion": "13.0",
+            # Measured, not taken from a wheel tag: the highest minos over
+            # every Mach-O in a built app, 15.0 for PySide6-Essentials 6.11.2.
+            # Qt's own libraries are built for macOS 13, which is all the
+            # wheel's macosx_13_0 tag describes, but PySide6's binding modules
+            # (QtCore/QtGui/QtWidgets/QtSvg .abi3.so, libpyside6, Shiboken,
+            # libshiboken6) are built for 15.0 and the app imports them on
+            # every launch. The main executable's own minos (11.0) is
+            # PyInstaller's bootloader and says nothing about the rest.
+            # Re-measure after any PySide6 or Python change, and before
+            # raising the PySide6-Essentials cap in pyproject.toml:
+            #   find "dist/Auto Text Typer.app" -type f -exec vtool -show-build {} \; \
+            #     2>/dev/null | awk '/minos/ {print $2}' | sort -V | tail -1
+            "LSMinimumSystemVersion": "15.0",
         },
     )

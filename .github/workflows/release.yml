@@ -3,7 +3,10 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # A release tag is v followed by a digit (v1.2.3). A bare "v*" would also
+      # start a run for v-test, vnext or verify. The version guard below would
+      # reject those, but only after the run had been queued.
+      - "v[0-9]*"
   workflow_dispatch:
 
 # Every build job below packages Auto Text Typer's real Qt GUI
@@ -49,12 +52,12 @@ jobs:
     name: tag matches project.version
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Needed for tomllib: the ubuntu-22.04 image's system python3 is 3.10,
       # and tomllib landed in 3.11. No `cache: pip` here -- this job installs
       # nothing, so there is no dependency set to key a cache on.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -153,9 +156,9 @@ jobs:
       # job. Native on this runner, so no fat-binary requirement applies.
       ATT_TARGET_ARCH: arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -196,7 +199,7 @@ jobs:
           check "dist/AutoTextTyper-*-macOS-arm64.zip" || rc=1
           exit "$rc"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-arm64
           # Globs name the architecture explicitly (not dist/*.dmg) so this
@@ -223,11 +226,13 @@ jobs:
     # macos-15-intel is preferred over macos-26-intel because building on the
     # older macOS avoids *raising* the resulting binary's minimum macOS, and
     # Intel Macs are precisely the machines stuck on older macOS releases. It
-    # does not lower that minimum without limit: PySide6-Essentials publishes
-    # a single macOS wheel tagged macosx_14_0_universal2, so Qt already puts
-    # the floor at macOS 14 (universal2 is also why this wheel installs on an
-    # Intel runner at all). The aim here is to stay at that floor rather than
-    # push past it with a newer toolchain.
+    # does not lower that minimum without limit: the floor is set by PySide6's
+    # own binding modules, which are built for macOS 15.0 in both the x86_64
+    # and the arm64 slice of the universal2 wheel (see LSMinimumSystemVersion
+    # in the spec). The wheel's macosx_13_0 tag only describes Qt's own
+    # libraries, and universal2 is also why this wheel installs on an Intel
+    # runner at all. The aim here is to stay at that floor rather than push
+    # past it with a newer toolchain.
     #
     # When macOS 15 is retired this job will fail with an unknown-label
     # error; bump it to the then-current *-intel label.
@@ -235,9 +240,9 @@ jobs:
     env:
       ATT_TARGET_ARCH: x86_64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -275,7 +280,7 @@ jobs:
           check "dist/AutoTextTyper-*-macOS-x86_64.zip" || rc=1
           exit "$rc"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-x86_64
           path: |
@@ -287,9 +292,9 @@ jobs:
     needs: version-guard
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -340,7 +345,7 @@ jobs:
           }
           if (-not $ok) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: |
@@ -356,9 +361,9 @@ jobs:
     # users' systems the resulting AppImage/tarball actually run on.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -405,7 +410,7 @@ jobs:
           check "dist/AutoTextTyper-*-Linux-x86_64.tar.gz" || rc=1
           exit "$rc"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: |
@@ -439,25 +444,37 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # download-artifact is v8 while every upload-artifact above is v7, and
+      # that is the intended pair, not a typo. v7 added unzipped single-file
+      # uploads (`archive: false`); v8 is the release that can download them,
+      # and download-artifact's own README pairs v7 uploads with v8 downloads.
+      # Nothing here sets `archive: false` (that mode takes exactly one file,
+      # and each artifact above is two), but move the two actions together
+      # rather than matching their major numbers.
+      - uses: actions/download-artifact@v8
         with:
           path: dist-artifacts
 
-      # Pinned to a full commit SHA, not the mutable v2 tag: this is the only
+      # Pinned to a full commit SHA, not the mutable v3 tag: this is the only
       # job in the workflow holding `contents: write`, so whoever controls
       # what this action resolves to can write to the repository. A major-
       # version tag is repointed by the action's maintainers at will, which
-      # means `@v2` is a promise about semantics, not about code. The trailing
+      # means `@v3` is a promise about semantics, not about code. The trailing
       # comment is the human-readable half of the pin -- keep both in step
-      # when bumping, and re-resolve the SHA with
+      # when bumping, and resolve the SHA of the *commit* with
       #   gh api repos/softprops/action-gh-release/git/ref/tags/<tag>
-      # rather than copying one from documentation.
+      # rather than copying one from documentation. That call returns the
+      # commit only for a lightweight tag (v2.6.2 was one). For an annotated
+      # tag (v3.0.4 is one) it returns the tag object, whose SHA is not a
+      # commit and cannot be used in `uses:`; when its "type" is "tag", follow
+      # it once more with
+      #   gh api repos/softprops/action-gh-release/git/tags/<that sha> --jq .object.sha
       #
       # fail_on_unmatched_files guarantees this never publishes an empty
       # release: the `if` above already requires three build jobs to have
       # succeeded, and this catches the remaining case where their artifacts
       # somehow did not land in dist-artifacts/.
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: dist-artifacts/**/*
           fail_on_unmatched_files: true
