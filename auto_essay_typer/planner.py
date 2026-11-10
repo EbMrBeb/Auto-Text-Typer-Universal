@@ -18,9 +18,9 @@ document to a target that cannot express some of those ops is
 ``simulator.simulate_document`` is the single source of truth for how those
 ops behave; ``plan_document`` tracks the exact same state machine so a plan it
 builds is guaranteed to replay back to the document it was built from (see
-``tests/test_document_pipeline.py`` and the project's Google Docs editing
-model -- the editor that model was written from, and the reference the
-document format was designed against, rather than the only place it can go).
+``tests/test_document_pipeline.py``). That state machine is the Google Docs
+editing model: Google Docs is the editor it was written from and the reference
+the document format was designed against, not the only place a document can go.
 """
 
 import random
@@ -293,7 +293,11 @@ def plan_document(
     profile: Profile | None = None,
     seed: int | None = None,
 ) -> list[Action]:
-    """Return the action stream that types ``doc`` into a blank Google Doc.
+    """Return the action stream that types ``doc`` into a blank document.
+
+    The stream carries abstract ``FormatOp``s, not key combinations. The
+    target editor's keymap, used by ``Driver``, decides which shortcut each
+    one presses.
 
     ``doc`` must already be keymap-adapted (``keymaps.adapt_document``): this
     function has no fallback for a Title or Subtitle paragraph style, it

@@ -42,7 +42,7 @@ Dependency direction is strictly one-way: `actions` <- `simulator`, and `layout`
 - [ ] **Step 1: Create the virtual environment and install dependencies**
 
 ```bash
-cd "/Users/braxtongorman/Auto essay typer"
+cd "<path-to-repo>"
 python3 -m venv .venv
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet pynput pytest pytest-cov
