@@ -342,7 +342,11 @@ class KeymapEditor(QWidget, ThemedMixin):
     # -- selection -------------------------------------------------------------------------------------
 
     def current_target_id(self) -> str:
-        return str(self.target_combo.currentData())
+        """The editor chosen in the picker; the first one offered if nothing is selected."""
+        current = self.target_combo.currentData()
+        if isinstance(current, str):
+            return current
+        return self._targets[0].id
 
     def set_target(self, target_id: str) -> None:
         index = self._index_of(target_id)

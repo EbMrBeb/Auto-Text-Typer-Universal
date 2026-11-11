@@ -598,3 +598,13 @@ def test_the_page_scrolls_so_nothing_is_clipped_in_a_short_window(qtbot, qapp):
     scroll = page.findChild(QScrollArea)
     assert scroll is not None and scroll.accessibleName() == "Settings sections"
     assert scroll.widgetResizable()
+
+
+def test_a_picker_with_nothing_selected_saves_nothing_and_goes_back_to_the_saved_editor(qtbot, qapp):
+    page, store, _theme = _make_page(qtbot, qapp)
+    saved = store.settings.target_app
+
+    page.target_combo.setCurrentIndex(-1)  # not a choice; must not store the string "None"
+
+    assert store.settings.target_app == saved
+    assert page.target_combo.currentData() == saved

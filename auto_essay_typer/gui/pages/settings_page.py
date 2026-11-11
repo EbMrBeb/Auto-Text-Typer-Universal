@@ -458,6 +458,10 @@ class SettingsPage(QWidget, ThemedMixin):
             return
         self.target_error_label.setVisible(False)
         target_id = self.target_combo.currentData()
+        if not isinstance(target_id, str):
+            # Nothing selected is not a choice; show what is really stored.
+            self._set_combo(self.target_combo, self._store.settings.target_app)
+            return
         try:
             self._store.update(target_app=target_id)
         except ValueError as exc:

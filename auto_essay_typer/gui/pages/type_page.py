@@ -1040,16 +1040,32 @@ class TypePage(QWidget):
     # -- the "Typing into" editor picker ---------------------------------------------------
 
     def selected_target_id(self) -> str:
-        """The id of the editor chosen in the "Typing into" picker."""
-        return str(self.target_combo.currentData())
+        """The id of the editor chosen in the "Typing into" picker.
+
+        The picker can momentarily have nothing selected (``currentData()`` is ``None`` when
+        the index is -1). That is never reported as a target id: the answer is then the
+        editor the picker would open on for the saved setting (see ``initial_target_id``),
+        which is always one this system offers.
+        """
+        current = self.target_combo.currentData()
+        if isinstance(current, str) and any(t.id == current for t in self._targets):
+            return current
+        return initial_target_id(self._settings_store.settings.target_app, self._targets)
 
     def _selected_target(self) -> TargetApp:
         return targets.get_target(self.selected_target_id())
 
     def _select_target(self, target_id: str) -> None:
-        """Move the picker to ``target_id`` without treating it as a choice the user made."""
+        """Move the picker to ``target_id`` without treating it as a choice the user made.
+
+        An editor this system does not offer (a setting carried over from another OS) moves
+        the picker to the one it opens on instead, never to "nothing selected".
+        """
+        index = self.target_combo.findData(target_id)
+        if index < 0:
+            index = self.target_combo.findData(initial_target_id(target_id, self._targets))
         self.target_combo.blockSignals(True)
-        self.target_combo.setCurrentIndex(self.target_combo.findData(target_id))
+        self.target_combo.setCurrentIndex(index)
         self.target_combo.blockSignals(False)
 
     def _keymap_for(self, target: TargetApp) -> Mapping[FormatOp, Chord]:
@@ -1062,7 +1078,12 @@ class TypePage(QWidget):
         settings = dataclasses.replace(self._settings_store.settings, target_app=target.id)
         return app_settings.effective_keymap(settings, platforms.current_os())
 
-    def _on_target_changed(self, _index: int) -> None:
+    def _on_target_changed(self, index: int) -> None:
+        if index < 0:
+            # Nothing is selected, which is not a choice: put the picker back on an editor.
+            self._select_target(self.selected_target_id())
+            self._refresh_target_area()
+            return
         target = self._selected_target()
         self._hide_inline_message()  # anything it said was about the previous choice
         saved = self._settings_store.settings.target_app
