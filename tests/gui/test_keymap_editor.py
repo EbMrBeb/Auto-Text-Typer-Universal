@@ -132,6 +132,15 @@ def test_the_combo_falls_back_when_the_default_editor_is_unavailable(qtbot, qapp
     assert editor.current_target_id() == targets.targets_for(OperatingSystem.WINDOWS)[0].id
 
 
+def test_an_empty_combo_reports_a_listed_editor_not_the_word_None(qtbot, qapp, tmp_path):
+    editor, _store = _make(qtbot, qapp, tmp_path)
+    editor.target_combo.blockSignals(True)
+    editor.target_combo.setCurrentIndex(-1)
+    editor.target_combo.blockSignals(False)
+    assert editor.target_combo.currentData() is None
+    assert editor.current_target_id() == targets.targets_for(OperatingSystem.MACOS)[0].id
+
+
 def test_set_target_rejects_an_editor_that_is_not_listed(qtbot, qapp, tmp_path):
     editor, _store = _make(qtbot, qapp, tmp_path)
     with pytest.raises(ValueError, match="not available"):

@@ -22,13 +22,36 @@ def _as(monkeypatch, os_: OperatingSystem) -> None:
     monkeypatch.setattr(platforms, "current_os", lambda *args, **kwargs: os_)
 
 
+@pytest.fixture(autouse=True, params=list(OperatingSystem), ids=lambda os_: os_.value)
+def os_(request, monkeypatch) -> OperatingSystem:
+    """Run every test in this module as each operating system, whichever one runs the suite.
+
+    The editors on offer differ per system (TextEdit is macOS-only, Microsoft Word has no
+    Linux release), so a test that quietly assumes the list of the machine it runs on passes
+    there and fails on the others. Running as all three means a Mac catches that too.
+    """
+    _as(monkeypatch, request.param)
+    return request.param
+
+
+def _offered(os_: OperatingSystem) -> list[str]:
+    return [target.id for target in targets.targets_for(os_)]
+
+
+def _lacking(os_: OperatingSystem) -> list[str]:
+    """Editors that exist, but not on ``os_``."""
+    return [target.id for target in targets.TARGET_APPS.values() if os_ not in target.platforms]
+
+
 def _items(page) -> list[tuple[str, str]]:
     combo = page.target_combo
     return [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())]
 
 
 def _pick(page, target_id: str) -> None:
-    page.target_combo.setCurrentIndex(page.target_combo.findData(target_id))
+    index = page.target_combo.findData(target_id)
+    assert index >= 0, f"{target_id!r} is not offered here; the picker lists {_items(page)}"
+    page.target_combo.setCurrentIndex(index)
 
 
 def _import(qtbot, page) -> None:
@@ -73,46 +96,53 @@ def test_the_picker_defaults_to_google_docs_with_no_saved_choice(type_page_rig):
     assert type_page_rig().page.selected_target_id() == "google-docs"
 
 
-@pytest.mark.parametrize("saved", ["microsoft-word", "libreoffice-writer", "plain-text"])
-def test_the_picker_starts_on_the_saved_editor(type_page_rig, monkeypatch, tmp_path, saved):
-    _as(monkeypatch, OperatingSystem.MACOS)
-    store = SettingsStore(tmp_path / "settings.json")
-    store.update(target_app=saved)
+@pytest.mark.parametrize("saved", sorted(targets.TARGET_APPS))
+def test_the_picker_starts_on_the_saved_editor_when_this_system_has_it(type_page_rig, monkeypatch, tmp_path, os_, saved):
+    # Saved where the editor exists, so the store accepts it; opened on this system.
+    _as(monkeypatch, next(o for o in OperatingSystem if o in targets.get_target(saved).platforms))
+    SettingsStore(tmp_path / "settings.json").update(target_app=saved)
+    _as(monkeypatch, os_)
 
     page = type_page_rig(store=SettingsStore(tmp_path / "settings.json")).page
 
-    assert page.selected_target_id() == saved
-    assert page.target_combo.currentText() == targets.get_target(saved).name
+    expected = saved if saved in _offered(os_) else _offered(os_)[0]
+    assert page.selected_target_id() == expected
+    assert page.target_combo.currentText() == targets.get_target(expected).name
 
 
-def test_a_saved_editor_this_system_does_not_have_falls_back_to_the_first(type_page_rig, monkeypatch, tmp_path):
-    _as(monkeypatch, OperatingSystem.MACOS)
-    store = SettingsStore(tmp_path / "settings.json")
-    store.update(target_app="textedit")
-    # Carried over to a Linux box, where TextEdit does not exist.
-    _as(monkeypatch, OperatingSystem.LINUX)
+def test_a_saved_editor_this_system_does_not_have_falls_back_to_the_first(type_page_rig, monkeypatch, tmp_path, os_):
+    # Every editor this system lacks (none on macOS, TextEdit on Windows, Word and TextEdit
+    # on Linux), saved on a system that has it, then carried over to this one.
+    for saved in _lacking(os_):
+        _as(monkeypatch, next(o for o in OperatingSystem if o in targets.get_target(saved).platforms))
+        store = SettingsStore(tmp_path / f"{saved}.json")
+        store.update(target_app=saved)
+        _as(monkeypatch, os_)
 
-    page = type_page_rig(store=store).page
+        page = type_page_rig(store=store).page
 
-    assert page.selected_target_id() == "google-docs"
+        assert page.selected_target_id() == _offered(os_)[0], saved
+        assert page.target_combo.currentIndex() >= 0, saved
+        assert page.target_notes_label.text() == targets.get_target(_offered(os_)[0]).notes, saved
 
 
 # --- saving ----------------------------------------------------------------------------------------------------------------------------
 
 
 def test_changing_the_editor_saves_the_choice(qtbot, type_page_rig, tmp_path):
+    chosen = "libreoffice-writer"
     rig = type_page_rig()
     saved = []
     rig.store.changed.connect(saved.append)
 
-    _pick(rig.page, "microsoft-word")
+    _pick(rig.page, chosen)
 
-    assert rig.store.settings.target_app == "microsoft-word"
-    assert [settings.target_app for settings in saved] == ["microsoft-word"]
+    assert rig.store.settings.target_app == chosen
+    assert [settings.target_app for settings in saved] == [chosen]
     on_disk = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    assert on_disk["target_app"] == "microsoft-word"
+    assert on_disk["target_app"] == chosen
     # A page opened later (the next launch) starts on what was chosen.
-    assert type_page_rig(store=SettingsStore(tmp_path / "settings.json")).page.selected_target_id() == "microsoft-word"
+    assert type_page_rig(store=SettingsStore(tmp_path / "settings.json")).page.selected_target_id() == chosen
 
 
 def test_choosing_the_same_editor_again_saves_nothing(qtbot, type_page_rig, tmp_path):
@@ -127,10 +157,10 @@ def test_a_choice_that_cannot_be_written_is_still_used_for_now_and_the_user_is_t
     unwritable.mkdir()
     rig = type_page_rig(store=SettingsStore(unwritable))
 
-    _pick(rig.page, "microsoft-word")
+    _pick(rig.page, "libreoffice-writer")
 
-    assert rig.page.selected_target_id() == "microsoft-word"
-    assert rig.page.target_notes_label.text() == targets.get_target("microsoft-word").notes
+    assert rig.page.selected_target_id() == "libreoffice-writer"
+    assert rig.page.target_notes_label.text() == targets.get_target("libreoffice-writer").notes
     assert rig.page.inline_message_label.isHidden() is False
     assert "couldn't be saved" in rig.page.inline_message_label.text()
 
@@ -157,12 +187,12 @@ def test_a_choice_the_store_refuses_puts_the_picker_back_and_says_why(qtbot, typ
 # --- what the page says about the editor ------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("target_id", ["google-docs", "microsoft-word", "libreoffice-writer", "plain-text"])
-def test_the_selected_editors_notes_are_shown_under_the_picker(type_page_rig, target_id):
+def test_the_selected_editors_notes_are_shown_under_the_picker(type_page_rig, os_):
     page = type_page_rig().page
-    _pick(page, target_id)
-    assert page.target_notes_label.text() == targets.get_target(target_id).notes
-    assert page.target_notes_label.isHidden() is False
+    for target_id in _offered(os_):
+        _pick(page, target_id)
+        assert page.target_notes_label.text() == targets.get_target(target_id).notes, target_id
+        assert page.target_notes_label.isHidden() is False, target_id
 
 
 def test_the_notes_follow_the_selection(type_page_rig):
@@ -182,11 +212,17 @@ def test_a_checked_editor_gets_no_caution(type_page_rig):
             assert page.target_caution_label.isHidden() is True, target.id
 
 
-def test_an_unchecked_editor_gets_a_muted_caution_pointing_to_the_advanced_page(type_page_rig, monkeypatch):
-    _as(monkeypatch, OperatingSystem.MACOS)
+_UNCHECKED = {
+    OperatingSystem.MACOS: {"microsoft-word", "libreoffice-writer", "textedit"},
+    OperatingSystem.WINDOWS: {"microsoft-word", "libreoffice-writer"},
+    OperatingSystem.LINUX: {"libreoffice-writer"},
+}
+
+
+def test_an_unchecked_editor_gets_a_muted_caution_pointing_to_the_advanced_page(type_page_rig, os_):
     page = type_page_rig().page
-    unchecked = [t for t in targets.targets_for(OperatingSystem.MACOS) if not t.verified]
-    assert {t.id for t in unchecked} == {"microsoft-word", "libreoffice-writer", "textedit"}
+    unchecked = [t for t in targets.targets_for(os_) if not t.verified]
+    assert {t.id for t in unchecked} == _UNCHECKED[os_]
     for target in unchecked:
         _pick(page, target.id)
         assert page.target_caution_label.isHidden() is False, target.id
@@ -198,7 +234,7 @@ def test_an_unchecked_editor_gets_a_muted_caution_pointing_to_the_advanced_page(
 
 def test_the_caution_goes_away_again_when_a_checked_editor_is_chosen(type_page_rig):
     page = type_page_rig().page
-    _pick(page, "microsoft-word")
+    _pick(page, "libreoffice-writer")
     assert page.target_caution_label.isHidden() is False
     _pick(page, "google-docs")
     assert page.target_caution_label.isHidden() is True
@@ -236,7 +272,7 @@ def test_switching_back_gives_back_exactly_what_the_first_editor_had(qtbot, type
     first_lines = page.warning_lines()
 
     _pick(page, "plain-text")
-    _pick(page, "microsoft-word")
+    _pick(page, "libreoffice-writer")
     _pick(page, "google-docs")
 
     again = page.document_session()
@@ -245,10 +281,10 @@ def test_switching_back_gives_back_exactly_what_the_first_editor_had(qtbot, type
     assert again.document is first.document
 
 
-def test_the_warnings_name_the_editor_that_is_selected(qtbot, type_page_rig):
+def test_the_warnings_name_the_editor_that_is_selected(qtbot, type_page_rig, os_):
     page = type_page_rig().page
     _import(qtbot, page)
-    for target in ("microsoft-word", "libreoffice-writer"):
+    for target in [t for t in ("microsoft-word", "libreoffice-writer") if t in _offered(os_)]:
         _pick(page, target)
         name = targets.get_target(target).name
         editor_lines = [line for line in page.warning_lines() if "shortcut" in line]
@@ -271,12 +307,12 @@ def test_an_editor_that_loses_nothing_turns_the_panel_to_good_news_and_back(qtbo
         assert page.warnings_panel.none_label.isHidden() is False
 
 
-def test_switching_editor_in_plain_text_mode_changes_nothing_but_the_notes(qtbot, type_page_rig):
+def test_switching_editor_in_plain_text_mode_changes_nothing_but_the_notes(qtbot, type_page_rig, os_):
     page = type_page_rig().page
     page.set_text("My plain text.")
     before = page.counter_label.text()
 
-    _pick(page, "textedit" if platforms.current_os() is OperatingSystem.MACOS else "libreoffice-writer")
+    _pick(page, "textedit" if os_ is OperatingSystem.MACOS else "libreoffice-writer")
 
     assert page.in_document_mode is False
     assert page.text_edit.toPlainText() == "My plain text."
@@ -435,19 +471,19 @@ def test_a_choice_that_could_not_be_saved_survives_an_unrelated_settings_change(
     rig = type_page_rig(store=SettingsStore(unwritable))
     page = rig.page
     _import(qtbot, page)
-    _pick(page, "microsoft-word")
+    _pick(page, "libreoffice-writer")
     assert "couldn't be saved" in page.inline_message_label.text()
 
     unwritable.rmdir()  # the problem goes away ...
     rig.store.update(show_mini_window=False)  # ... and something else is saved
 
-    assert page.selected_target_id() == "microsoft-word", "the picker must not snap back to the saved editor"
-    assert page.document_session().target.id == "microsoft-word"
+    assert page.selected_target_id() == "libreoffice-writer", "the picker must not snap back to the saved editor"
+    assert page.document_session().target.id == "libreoffice-writer"
     assert rig.store.settings.target_app == "google-docs"
     assert page.inline_message_label.isHidden() is False, "it is still true: that choice was never saved"
 
-    _pick(page, "libreoffice-writer")  # now it saves, so the old warning is out of date
-    assert rig.store.settings.target_app == "libreoffice-writer"
+    _pick(page, "plain-text")  # now it saves, so the old warning is out of date
+    assert rig.store.settings.target_app == "plain-text"
     assert page.inline_message_label.isHidden() is True
 
 
@@ -455,7 +491,7 @@ def test_going_back_to_the_saved_editor_clears_the_warning_about_the_unsaved_one
     unwritable = tmp_path / "settings-is-a-folder"
     unwritable.mkdir()
     page = type_page_rig(store=SettingsStore(unwritable)).page
-    _pick(page, "microsoft-word")
+    _pick(page, "libreoffice-writer")
     assert page.inline_message_label.isHidden() is False
 
     _pick(page, "google-docs")
@@ -493,10 +529,10 @@ def test_choosing_an_editor_on_a_page_with_its_own_store_keeps_what_another_stor
     other = SettingsStore(tmp_path / "settings.json")
     other.update(keymap_overrides={"google-docs": {"toggle_bold": "ctrl+shift+b"}})
 
-    _pick(rig.page, "microsoft-word")
+    _pick(rig.page, "libreoffice-writer")
 
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    assert saved["target_app"] == "microsoft-word"
+    assert saved["target_app"] == "libreoffice-writer"
     assert saved["keymap_overrides"] == {"google-docs": {"toggle_bold": "ctrl+shift+b"}}
 
 
@@ -519,3 +555,40 @@ def test_a_refused_choice_goes_back_to_the_editor_that_is_saved_now_not_the_one_
     assert rig.page.inline_message_label.text().startswith("Couldn't switch to Google Docs")
     assert rig.store.settings.target_app == "libreoffice-writer"
     assert rig.page.selected_target_id() == "libreoffice-writer", "back to what is saved, not to what was"
+
+
+# --- an empty picker is never reported as an editor -----------------------------------------------------------------------------------
+
+
+def test_a_picker_with_nothing_selected_reports_an_offered_editor_not_the_word_None(type_page_rig, os_):
+    rig = type_page_rig()
+    page = rig.page
+
+    page.target_combo.blockSignals(True)  # as if the handler had not run yet
+    page.target_combo.setCurrentIndex(-1)  # what a lookup of an editor this system lacks does
+    page.target_combo.blockSignals(False)
+
+    assert page.target_combo.currentData() is None
+    assert page.selected_target_id() in _offered(os_)
+    assert page.selected_target_id() != "None"
+
+
+def test_an_empty_picker_is_put_back_on_an_editor_and_nothing_is_saved(type_page_rig, os_):
+    rig = type_page_rig()
+    page = rig.page
+    saved_before = rig.store.settings.target_app
+
+    page.target_combo.setCurrentIndex(-1)
+
+    assert page.target_combo.currentIndex() >= 0
+    assert page.selected_target_id() == page.target_combo.currentData()
+    assert rig.store.settings.target_app == saved_before
+
+
+def test_selecting_an_editor_this_system_lacks_lands_on_one_it_has(type_page_rig, os_):
+    page = type_page_rig().page
+    for missing in _lacking(os_):
+        page._select_target(missing)
+
+        assert page.target_combo.currentIndex() >= 0, missing
+        assert page.selected_target_id() in _offered(os_), missing
