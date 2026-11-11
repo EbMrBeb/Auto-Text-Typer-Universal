@@ -14,3 +14,7 @@ assets/_preview/
 
 # macOS Finder metadata
 .DS_Store
+
+# Virtualenv variants
+.venv*/
+venv/
