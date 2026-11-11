@@ -749,6 +749,128 @@ def test_two_footnotes_are_reported_as_two():
     assert footnote_warning.startswith("2 ")
 
 
+# A note with more than one paragraph. Google puts every paragraph of a note in the one <div>
+# but opens only the first with the back-link, so a reader that decides paragraph by paragraph
+# leaves the first out and types the rest as the closing paragraphs of the essay.
+
+_BODY_WITH_ONE_MARKER = '<p>A claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> here.</p>'
+_NOTE_OPENING = '<p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> First.</span></p>'
+_ONE_NOTE_REPORTED = ("1 footnote/endnote/comment reference dropped, along with the text of the note",)
+
+
+def test_every_paragraph_of_a_footnote_is_left_out_not_only_the_first():
+    html = (
+        _BODY_WITH_ONE_MARKER
+        + "<div>"
+        + _NOTE_OPENING
+        + "<p><span>Second paragraph of the note.</span></p></div>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "A claim here."
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+@pytest.mark.parametrize("later_paragraphs", [1, 2, 5])
+def test_a_footnote_is_one_footnote_however_many_paragraphs_it_has(later_paragraphs):
+    later = "".join(f"<p><span>Paragraph {n} of the note.</span></p>" for n in range(2, 2 + later_paragraphs))
+    doc, warnings = parse_gdocs_html(_BODY_WITH_ONE_MARKER + "<div>" + _NOTE_OPENING + later + "</div>")
+    assert doc.plain_text() == "A claim here."
+    assert warnings == _ONE_NOTE_REPORTED, "the later paragraphs are not further notes, and not body text"
+
+
+def test_a_list_or_heading_inside_a_footnote_is_left_out_with_the_rest_of_it():
+    html = (
+        _BODY_WITH_ONE_MARKER
+        + "<div>"
+        + _NOTE_OPENING
+        + "<ul><li>Smith, 2019</li><li>Jones, 2021</li></ul><h2>Appendix</h2><p>Last paragraph.</p></div>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "A claim here."
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+def test_a_comment_and_the_replies_under_it_are_left_out_together():
+    html = (
+        '<p>Body<sup><a href="#cmnt1" id="cmnt_ref1">[a]</a></sup> text.</p>'
+        '<div><p><a href="#cmnt_ref1" id="cmnt1">[a]</a><span>Please cite this.</span></p>'
+        "<p><span>Done, see the note.</span></p></div>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "Body text."
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+@pytest.mark.parametrize("shared_wrapper", [False, True], ids=["a wrapper each", "one shared wrapper"])
+def test_a_long_footnote_does_not_hide_or_merge_the_notes_around_it(shared_wrapper):
+    first = _NOTE_OPENING + "<p><span>More on the first.</span></p>"
+    second = '<p><a href="#ftnt_ref2" id="ftnt2">[2]</a><span> Second.</span></p>'
+    notes = f"<div>{first}{second}</div>" if shared_wrapper else f"<div>{first}</div><div>{second}</div>"
+    html = (
+        '<p>One<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> and '
+        'two<sup><a href="#ftnt2" id="ftnt_ref2">[2]</a></sup>.</p>' + notes
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "One and two."
+    (footnote_warning,) = warnings
+    assert footnote_warning.startswith("2 "), "two notes, whatever their paragraphs"
+
+
+def test_a_footnote_wrapped_in_more_than_one_container_is_still_left_out_whole():
+    html = _BODY_WITH_ONE_MARKER + "<div><div>" + _NOTE_OPENING + "<p>Second paragraph.</p></div></div>"
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "A claim here."
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+def test_the_essay_after_a_footnote_wrapper_is_still_typed():
+    # The wrapper ends where Google ends it. Only what is inside it belongs to the note.
+    html = (
+        _BODY_WITH_ONE_MARKER
+        + "<div>"
+        + _NOTE_OPENING
+        + "<p>Second paragraph of the note.</p></div><p>Closing paragraph of the essay.</p>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert doc.plain_text() == "A claim here.\nClosing paragraph of the essay."
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+def test_a_wrapper_that_merely_opens_with_a_footnote_marker_is_still_body_text():
+    # A marker and a back-link differ by the "_ref" in the id; only a back-link opens a note.
+    html = (
+        '<div><p><sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> says otherwise.</p>'
+        "<p>And the next paragraph carries on.</p></div>"
+    )
+    doc, _warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == [" says otherwise.", "And the next paragraph carries on."]
+
+
+def test_a_wrapper_that_does_not_open_with_a_note_is_still_walked_paragraph_by_paragraph():
+    # Nothing here says the paragraph after the note belongs to it, so it is not taken to.
+    # What cannot be shown to be a note's text stays the writer's own.
+    html = (
+        "<div><p>First body paragraph.</p>"
+        '<p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> A note.</span></p>'
+        "<p>Second body paragraph.</p></div>"
+    )
+    doc, warnings = parse_gdocs_html(html)
+    assert [p.text for p in doc.paragraphs] == ["First body paragraph.", "Second body paragraph."]
+    assert warnings == _ONE_NOTE_REPORTED
+
+
+def test_the_footnote_message_is_true_of_a_long_footnote():
+    doc, warnings = parse_gdocs_html(
+        _BODY_WITH_ONE_MARKER
+        + "<div>"
+        + _NOTE_OPENING
+        + "<p><span>Smith, A Study of Things, p. 14.</span></p></div>"
+    )
+    (footnote_warning,) = warnings
+    assert "along with the text of the note" in footnote_warning
+    assert "Smith" not in doc.plain_text(), "the message says the text is dropped, so it must be"
+
+
 def test_a_comment_section_with_no_per_note_links_is_still_reported():
     html = '<p>body text</p><div id="comments"><p>a review comment</p></div>'
     _doc, warnings = parse_gdocs_html(html)
@@ -764,6 +886,19 @@ def test_a_paragraph_that_merely_starts_with_a_footnote_marker_is_still_body_tex
 
 def test_the_footnoted_export_fixture_types_the_body_and_reports_the_notes():
     html = (FIXTURES_DIR / "gdocs_export_footnotes.html").read_text(encoding="utf-8")
+    doc, warnings = parse_gdocs_html(html)
+
+    assert doc == Document(
+        (
+            Paragraph(runs=(Run("The first claim rests on one source."),)),
+            Paragraph(runs=(Run("The second claim rests on another."),)),
+        )
+    )
+    assert warnings == ("2 footnote/endnote/comment references dropped, along with the text of the note",)
+
+
+def test_the_export_fixture_with_a_long_note_types_the_body_and_reports_both_notes():
+    html = (FIXTURES_DIR / "gdocs_export_footnotes_long.html").read_text(encoding="utf-8")
     doc, warnings = parse_gdocs_html(html)
 
     assert doc == Document(

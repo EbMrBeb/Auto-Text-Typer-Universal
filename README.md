@@ -269,18 +269,20 @@ importer noticed, in plain language — for example that images will be left out
 because images cannot be typed, that links will be typed as plain text rather
 than as clickable links, that a table will be typed without its rows and columns
 (each cell becomes one or more paragraphs, row by row), that a footnote's text
-goes with its marker, or that custom fonts, sizes and colours will not survive.
+goes with its marker, that a Word document's header or footer will be left out,
+or that custom fonts, sizes and colours will not survive.
 
-Images, tables, text boxes, symbols from symbol fonts, fonts, colours, links,
-footnotes, endnotes, comments and soft line breaks have no representation in the
-document model at all, by design; this panel is how their absence gets reported
-rather than hidden. A Word document with tracked changes is the one case where
-the app has to choose for you: it is typed as its final version (added text kept,
-deleted text left out), and the panel says so. The list depends on the
-editor you picked and is recalculated the moment you change it. Where a loss is
-caused by a missing shortcut rather than by the document, the panel says which
-shortcut is missing for which editor — that is the part you can fix on the
-Advanced page. When nothing is lost, the panel says so instead.
+Images, tables, text boxes, headers and footers, symbols from symbol fonts,
+fonts, colours, links, footnotes, endnotes, comments and soft line breaks have
+no representation in the document model at all, by design; this panel is how
+their absence gets reported rather than hidden. A Word document with tracked
+changes is the one case where the app has to choose for you: it is typed as its
+final version (added text kept, deleted text left out), and the panel says so.
+The list depends on the editor you picked and is recalculated the moment you
+change it. Where a loss is caused by a missing shortcut rather than by the
+document, the panel says which shortcut is missing for which editor — that is
+the part you can fix on the Advanced page. When nothing is lost, the panel says
+so instead.
 
 ## Turn off autocorrect in the target application
 

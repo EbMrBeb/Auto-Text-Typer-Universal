@@ -126,6 +126,16 @@ IMPORT_SENTENCES: list[tuple[str, str]] = [
         "1 text box will be left out.",
     ),
     (
+        "1 header or footer not reproduced (dropped)",
+        "1 header or footer will be left out, along with any text or page numbers in it. "
+        "If you need it, add it by hand.",
+    ),
+    (
+        "2 headers or footers not reproduced (dropped)",
+        "2 headers or footers will be left out, along with any text or page numbers in them. "
+        "If you need them, add them by hand.",
+    ),
+    (
         "this document had tracked changes; it is typed as the final version, "
         "with the edits accepted and the deleted text left out",
         "This document has tracked changes. It will be typed as the final version: added text is "

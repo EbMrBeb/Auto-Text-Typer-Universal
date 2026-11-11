@@ -50,6 +50,9 @@ class NoteKind(StrEnum):
     SYMBOL = "symbol"
     #: The words in a text box, quoted so the person can tell which part is missing.
     TEXT_BOX = "text_box"
+    #: A header or footer that has something in it (its words, a page number): Word keeps
+    #: it apart from the body, so none of it is typed (a Word file only).
+    HEADER_FOOTER = "header_footer"
     #: A document with tracked changes, typed as its final version.
     TRACKED_CHANGES = "tracked_changes"
     #: Custom fonts, sizes or colours (a Google Docs export only).
@@ -73,6 +76,7 @@ _COUNTED_TEMPLATES: dict[NoteKind, str] = {
         "{n} footnote/endnote/comment reference{s} dropped, along with the text of the note"
     ),
     NoteKind.SYMBOL: "{n} special symbol{s} will be left out",
+    NoteKind.HEADER_FOOTER: "{n} header{s} or footer{s} not reproduced (dropped)",
 }
 
 #: Said once however many changes there were: what matters is not the number but that a

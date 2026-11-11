@@ -22,9 +22,12 @@ tree depth.
 Footnotes and comments are the other surprise, and the dangerous one. Google
 marks the note's own text in no way at all: it is an ordinary ``<p>`` inside
 an ordinary ``<div>``, recognisable only by the small back-link at its start.
-Read as ordinary content it becomes the closing paragraphs of the essay. This
-module recognises that back-link, drops the note, and counts each footnote
-once rather than once per half of it (see ``_NOTE_ID_RE``).
+A note of several paragraphs is one ``<div>`` of several ``<p>``, and only the
+first opens with the back-link. Read as ordinary content the note becomes the
+closing paragraphs of the essay. This module recognises that back-link, drops
+the note -- the whole ``<div>`` of it, not only the paragraph the back-link is
+in (see ``_wrapped_note_key``) -- and counts each footnote once rather than
+once per half of it (see ``_NOTE_ID_RE``).
 
 Anything with no keyboard-typable equivalent -- images, tables, hard rules,
 links (as clickable links), footnotes, comments, non-default fonts/sizes/
@@ -302,7 +305,10 @@ def _resolve_alignment(node: _Node, ctx: _ParseContext) -> Alignment:
 # Nothing marks the note's text as a note. Google gives it an ordinary <p>
 # inside an ordinary <div>, and the only sign is the small back-link at its
 # start -- so a parser that goes by the elements alone types the whole
-# bibliography as the closing paragraphs of the essay.
+# bibliography as the closing paragraphs of the essay. A note of more than one
+# paragraph has one <p> for each, in the one <div>, and the back-link opens only
+# the first: the <div> is the note, and a parser that decides <p> by <p> leaves
+# the first out and types the rest.
 
 #: Google's ids for the two halves of one footnote or comment: the marker in
 #: the body text ("ftnt_ref3") and the note's own text ("ftnt3"). Both reduce
@@ -633,6 +639,43 @@ def _flatten_table(table: _Node, ctx: _ParseContext) -> list[Paragraph]:
     return cells
 
 
+#: The blocks that are handled by what they are: a paragraph, a heading, a list, a table.
+#: Any other block only holds blocks, and is a container (see :func:`_handle_container`).
+_CONTENT_BLOCK_TAGS = frozenset({"p", "ul", "ol", "table", *_HEADING_STYLE_BY_TAG})
+
+
+def _is_plain_container(node: _Node) -> bool:
+    """Whether ``node`` is a block that only holds other blocks: a ``<div>``, a ``<section>``."""
+    return node.tag in _BLOCK_TAGS and node.tag not in _CONTENT_BLOCK_TAGS
+
+
+def _wrapped_note_key(node: _Node) -> tuple[str, str] | None:
+    """The first note in ``node``, if ``node`` is a container that is the text of a note.
+
+    Google writes the text of a note as a ``<div>`` holding a ``<p>`` for each paragraph of
+    it, and puts the back-link in the first alone. That is the only sign there is, so what
+    makes the ``<div>`` a note is that it *opens with* one: the same test
+    :func:`_leading_note_key` makes of a single paragraph, made one level up. The first
+    content of the container has to be a back-link, a block that opens with one, or a plain
+    container that does; a container that opens with anything else (a paragraph of the essay,
+    or one that begins with a footnote *marker*) is not a note, and is walked as it always was.
+
+    A container that opens with a note holds nothing but notes. It may hold several, each
+    opened by its own back-link, so the caller counts them by their back-links rather than
+    taking this one as the count (see :func:`_record_note_section`).
+    """
+    for child in node.children:
+        if isinstance(child, str):
+            if child.strip():
+                return None
+            continue
+        key = _leading_note_key(child)
+        if key is not None:
+            return key
+        return _wrapped_note_key(child) if _is_plain_container(child) else None
+    return None
+
+
 def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None:
     tag = node.tag
 
@@ -691,6 +734,13 @@ def _handle_block(node: _Node, ctx: _ParseContext, out: list[Paragraph]) -> None
 
     if tag == "hr":
         ctx.warnings[NoteKind.RULE] += 1
+        return
+
+    if _wrapped_note_key(node) is not None:
+        # The text of a note of more than one paragraph: Google opens only the first
+        # with the back-link, so the container is the note and every paragraph in it
+        # goes. Handled one paragraph at a time, the rest would be typed as the essay.
+        _record_note_section(node, ctx)
         return
 
     # Anything else that holds block content: the plain <div> Google wraps

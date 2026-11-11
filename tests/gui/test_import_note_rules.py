@@ -237,7 +237,11 @@ _WORD_FILE_WITH_EVERY_LOSS = _docx(
     '<w:r><w:t>one</w:t><w:br/><w:t>two</w:t><w:footnoteReference w:id="2"/><w:sym w:font="Symbol" w:char="F0B7"/></w:r>'
     "<w:ins><w:r><w:t>added</w:t></w:r></w:ins>"
     f"<w:r>{_TEXT_BOX.format(text='words in a box')}</w:r></w:p>"
-    "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+    "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+    {
+        "word/header1.xml": f"<w:hdr {_W}><w:p><w:r><w:t>Smith 1</w:t></w:r></w:p></w:hdr>",
+        "word/footer1.xml": f"<w:ftr {_W}><w:p><w:r><w:t>Confidential draft</w:t></w:r></w:p></w:ftr>",
+    },
 )
 
 _GOOGLE_EXPORT_WITH_EVERY_LOSS = (
@@ -291,6 +295,7 @@ def test_a_word_file_imported_through_the_page_shows_a_line_for_each_kind_it_los
         "1 footnote, endnote or comment will be left out, both the marker and the text of the note",
         "1 symbol from a symbol font",
         '1 text box will be left out, with the text in it: "words in a box"',
+        "2 headers or footers will be left out, along with any text or page numbers in them.",
         "This document has tracked changes.",
     ):
         assert any(line.startswith(beginning) for line in lines), (beginning, lines)
@@ -361,6 +366,27 @@ def test_a_google_notes_own_text_is_left_out_and_the_panel_says_so():
 
     (line,) = explain_warnings(warnings, [], "Google Docs")
     assert "marker" in line
+    assert "the text of the note" in line, line
+
+
+@pytest.mark.parametrize("paragraphs", [2, 4])
+def test_every_paragraph_of_a_google_note_is_left_out_not_only_the_first(paragraphs):
+    """The sentence says the text of the note is left out, so for a note with several paragraphs
+    the reader has to leave out every one of them. Google opens only the first with the back-link."""
+    later = "".join(
+        f"<p><span>Paragraph {n} of the note: {_NOTE_TEXT}</span></p>" for n in range(2, paragraphs + 1)
+    )
+    html = (
+        '<p>The first claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> rests on one source.</p>'
+        f'<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> {_NOTE_TEXT}</span></p>{later}</div>'
+    )
+    document, warnings = parse_gdocs_html(html)
+
+    assert _all_typed(document) == "The first claim rests on one source."
+    assert _NOTE_TEXT not in _all_typed(document), "no paragraph of the note's text is typed anywhere"
+
+    (line,) = explain_warnings(warnings, [], "Google Docs")
+    assert line.startswith("1 footnote, endnote or comment will be left out"), "one note, not one per paragraph"
     assert "the text of the note" in line, line
 
 
@@ -445,6 +471,37 @@ def test_a_text_box_is_left_out_with_its_words_and_the_panel_quotes_them():
         '1 text box will be left out, with the text in it: "Important sidebar note". '
         "If you need that text, add it by hand."
     )
+
+
+_HEADER = f"<w:hdr {_W}><w:p><w:r><w:t>Smith 1</w:t></w:r></w:p></w:hdr>"
+_FOOTER = f"<w:ftr {_W}><w:p><w:r><w:t>Confidential draft</w:t></w:r></w:p></w:ftr>"
+
+
+@pytest.mark.parametrize(
+    ("parts", "sentence"),
+    [
+        (
+            {"word/header1.xml": _HEADER},
+            "1 header or footer will be left out, along with any text or page numbers in it. "
+            "If you need it, add it by hand.",
+        ),
+        (
+            {"word/header1.xml": _HEADER, "word/footer1.xml": _FOOTER},
+            "2 headers or footers will be left out, along with any text or page numbers in them. "
+            "If you need them, add them by hand.",
+        ),
+    ],
+    ids=["one", "two"],
+)
+def test_a_headers_and_footers_text_is_left_out_and_the_panel_says_so(parts, sentence):
+    """Word keeps these apart from the body, so none of their words reach the typed text."""
+    document, warnings = parse_docx(_docx("<w:p><w:r><w:t>Body text.</w:t></w:r></w:p>", parts))
+
+    assert _all_typed(document) == "Body text."
+    assert "Smith" not in _all_typed(document) and "Confidential" not in _all_typed(document)
+
+    (line,) = explain_warnings(warnings, [], "Google Docs")
+    assert line == sentence
 
 
 def test_a_symbol_is_left_out_and_the_panel_says_what_kind_of_symbol():
