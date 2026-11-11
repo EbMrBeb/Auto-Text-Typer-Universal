@@ -1,0 +1,481 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # A release tag is v followed by a digit (v1.2.3). A bare "v*" would also
+      # start a run for v-test, vnext or verify. The version guard below would
+      # reject those, but only after the run had been queued.
+      - "v[0-9]*"
+  workflow_dispatch:
+
+# Every build job below packages Auto Text Typer's real Qt GUI
+# (auto_essay_typer.gui, via packaging/launch_gui.py). That entry point is
+# the shared default of the PyInstaller spec and all three build scripts, so
+# this workflow deliberately sets no ATT_ENTRY override: the release builds
+# the same thing a local `packaging/build_*.sh` does, and there is exactly
+# one place the entry point is defined. Do not reintroduce an ATT_ENTRY here
+# to build something other than the shipping app -- a published installer
+# that launches anything but the real GUI is the one failure a tagged
+# release cannot take back.
+
+# Serialize runs that publish to the same release, and deliberately do NOT
+# cancel the one already in flight.
+#
+# The group key is the ref, so each tag gets its own lane: two different tags
+# (v1.0.0 and v1.0.1) publish to two different releases and may safely build
+# in parallel, while re-pushing or moving the *same* tag queues behind the run
+# already handling it instead of racing it.
+#
+# cancel-in-progress is false because the final job uploads assets to a real,
+# externally visible GitHub release. Cancelling mid-upload does not roll
+# anything back: it leaves a published release carrying some of its artifacts
+# and silently missing the rest, which is worse than either outcome of letting
+# it finish. A superseded *test* run is cheap to throw away (see ci.yml, which
+# does cancel); a superseded *publishing* run has already changed the world.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Nothing downstream reads the tag: every artifact filename,
+  # CFBundleShortVersionString and the Windows version resource is derived
+  # from pyproject.toml's project.version by the build scripts and the
+  # PyInstaller spec. So a tag that disagrees with project.version does not
+  # fail -- it quietly publishes a release called v0.2.0 full of files named
+  # 0.1.0. This job is the only thing that compares the two, and every build
+  # job gates on it so a mismatched tag burns no runner minutes.
+  version-guard:
+    name: tag matches project.version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # Needed for tomllib: the ubuntu-22.04 image's system python3 is 3.10,
+      # and tomllib landed in 3.11. No `cache: pip` here -- this job installs
+      # nothing, so there is no dependency set to key a cache on.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      # Skipped on workflow_dispatch, which carries no tag to compare
+      # against. A skipped step still leaves the job successful, so the build
+      # jobs' `needs: version-guard` is satisfied and a manual run builds
+      # normally -- the guard constrains tags, not people.
+      - name: Compare the tag against project.version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          # The tag is passed through the environment, not interpolated into
+          # the script body. A `${{ }}` expression is pasted in as raw text
+          # before any shell or interpreter sees the script, so a crafted ref
+          # name interpolated directly would be executable code.
+          TAG: ${{ github.ref_name }}
+        # Parsed with tomllib rather than grepped: a regex over pyproject.toml
+        # cannot tell project.version from a version pinned in `dependencies`
+        # or from a `version` key under some other table, and would compare
+        # against whichever it happened to match first.
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          tag = os.environ["TAG"]
+          tag_version = tag.removeprefix("v")
+
+          with open("pyproject.toml", "rb") as handle:
+              project_version = tomllib.load(handle)["project"]["version"]
+
+          if tag_version == project_version:
+              print(f"Tag {tag} matches project.version {project_version}.")
+              sys.exit(0)
+
+          print(
+              f"::error title=Tag does not match project.version::"
+              f"tag {tag} (version {tag_version}) != project.version "
+              f"{project_version} in pyproject.toml"
+          )
+          print(
+              f"\n"
+              f"  tag:              {tag}  (version {tag_version})\n"
+              f"  project.version:  {project_version}  (pyproject.toml)\n"
+              f"\n"
+              f"Artifact filenames, CFBundleShortVersionString and the Windows\n"
+              f"version resource all come from project.version, never from the\n"
+              f"tag. Publishing this tag would create a release named {tag}\n"
+              f"containing files named {project_version}.\n"
+              f"\n"
+              f"Fix whichever one is wrong, then retag:\n"
+              f"  - if {tag_version} is the intended release, set\n"
+              f"    project.version = \"{tag_version}\" in pyproject.toml,\n"
+              f"    commit it, then delete and re-push the tag {tag}; or\n"
+              f"  - if {project_version} is the intended release, delete the\n"
+              f"    tag {tag} and tag that commit v{project_version} instead.\n",
+              file=sys.stderr,
+          )
+          sys.exit(1)
+          PY
+
+  # macOS ships two separate jobs, one per architecture, rather than one
+  # universal2 binary.
+  #
+  # A single universal2 build is not available to us: PyInstaller's
+  # target_arch='universal2' requires *every* bundled native binary to already
+  # be a fat binary, and while PySide6 and Qt are, the CPython that
+  # actions/setup-python installs is not -- it fails on its own stdlib
+  # extension modules (`_asyncio.cpython-3xx-darwin.so is not a fat binary!`).
+  # There is no partial mode. An earlier revision of this file tried
+  # universal2 and fell back to arm64 on failure; the universal2 attempt has
+  # never once succeeded, so the "fallback" was the only path that ever ran
+  # and the `::warning::` it printed fired on every single release. A warning
+  # that is always present teaches readers that warnings here mean nothing,
+  # so both the attempt and the warning are gone.
+  #
+  # The two jobs are spelled out rather than generated from a matrix because
+  # `needs` resolves per job, not per matrix leg: the release job has to be
+  # able to require arm64 while tolerating a failed x86_64 (see below), and a
+  # matrix would collapse both into one pass/fail result.
+  macos-arm64:
+    name: macOS arm64
+    needs: version-guard
+    # Pinned to macOS 15 rather than macos-latest for the same reason the
+    # Linux job pins ubuntu-22.04: the OS a release is built on is one of the
+    # things that decides the oldest OS the result will run on, and
+    # macos-latest silently moves to the next major every year, so a release
+    # built on it can raise this app's minimum macOS with nobody choosing to.
+    # A pinned label that gets retired fails loudly and gets bumped on
+    # purpose; a floating one changes what we ship without saying so.
+    runs-on: macos-15
+    env:
+      # Set explicitly rather than letting build_macos.sh default to
+      # `uname -m`, so the artifact filenames it derives from this value are
+      # a property of the workflow and not of whichever host picked up the
+      # job. Native on this runner, so no fat-binary requirement applies.
+      ATT_TARGET_ARCH: arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Build
+        run: packaging/build_macos.sh
+
+      - name: Report architectures with lipo
+        run: lipo -archs "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer"
+
+      - name: Self-test the built app
+        run: |
+          "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer" --self-test
+
+      # upload-artifact's if-no-files-found applies to the whole `path` set at
+      # once, so with two globs under it the step only fails when *neither*
+      # matches -- a .dmg built without its .zip would upload green. This
+      # checks each required artifact on its own and reports every missing one
+      # rather than stopping at the first.
+      - name: Verify every macOS arm64 artifact was produced
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            if ! compgen -G "$1" > /dev/null; then
+              echo "::error::Release artifact missing: nothing matched $1"
+              return 1
+            fi
+            echo "ok: $1 -> $(compgen -G "$1" | tr '\n' ' ')"
+          }
+          rc=0
+          check "dist/AutoTextTyper-*-macOS-arm64.dmg" || rc=1
+          check "dist/AutoTextTyper-*-macOS-arm64.zip" || rc=1
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64
+          # Globs name the architecture explicitly (not dist/*.dmg) so this
+          # job cannot pick up a differently-targeted build left in dist/.
+          path: |
+            dist/AutoTextTyper-*-macOS-arm64.dmg
+            dist/AutoTextTyper-*-macOS-arm64.zip
+          if-no-files-found: error
+
+  macos-x86_64:
+    name: macOS x86_64 (Intel)
+    needs: version-guard
+    # macos-15-intel is the x86_64 label, deliberately chosen for the
+    # architecture and not merely an un-bumped version number -- GitHub's
+    # Intel and Apple Silicon images are separate labels, so an Intel
+    # artifact can only come from an Intel label. Per
+    # https://github.com/actions/runner-images (macOS table) and
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    # the current non-deprecated x86_64 labels are macos-15-intel and
+    # macos-26-intel, both standard (free on public repos) runners;
+    # macos-13 no longer exists and macos-14 was retired on 2026-11-02, so
+    # neither is usable.
+    #
+    # macos-15-intel is preferred over macos-26-intel because building on the
+    # older macOS avoids *raising* the resulting binary's minimum macOS, and
+    # Intel Macs are precisely the machines stuck on older macOS releases. It
+    # does not lower that minimum without limit: the floor is set by PySide6's
+    # own binding modules, which are built for macOS 15.0 in both the x86_64
+    # and the arm64 slice of the universal2 wheel (see LSMinimumSystemVersion
+    # in the spec). The wheel's macosx_13_0 tag only describes Qt's own
+    # libraries, and universal2 is also why this wheel installs on an Intel
+    # runner at all. The aim here is to stay at that floor rather than push
+    # past it with a newer toolchain.
+    #
+    # When macOS 15 is retired this job will fail with an unknown-label
+    # error; bump it to the then-current *-intel label.
+    runs-on: macos-15-intel
+    env:
+      ATT_TARGET_ARCH: x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Build
+        run: packaging/build_macos.sh
+
+      - name: Report architectures with lipo
+        run: lipo -archs "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer"
+
+      # A native x86_64 binary on an x86_64 runner, so this really executes
+      # the shipped code rather than exercising Rosetta or being skipped.
+      - name: Self-test the built app
+        run: |
+          "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer" --self-test
+
+      - name: Verify every macOS x86_64 artifact was produced
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            if ! compgen -G "$1" > /dev/null; then
+              echo "::error::Release artifact missing: nothing matched $1"
+              return 1
+            fi
+            echo "ok: $1 -> $(compgen -G "$1" | tr '\n' ' ')"
+          }
+          rc=0
+          check "dist/AutoTextTyper-*-macOS-x86_64.dmg" || rc=1
+          check "dist/AutoTextTyper-*-macOS-x86_64.zip" || rc=1
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-x86_64
+          path: |
+            dist/AutoTextTyper-*-macOS-x86_64.dmg
+            dist/AutoTextTyper-*-macOS-x86_64.zip
+          if-no-files-found: error
+
+  windows:
+    needs: version-guard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Ensure Inno Setup (iscc) is installed
+        shell: pwsh
+        run: |
+          $onPath = Get-Command iscc -ErrorAction SilentlyContinue
+          $wellKnown = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ }
+          if (-not $onPath -and -not $wellKnown) {
+            choco install innosetup -y
+          }
+
+      - name: Build
+        shell: pwsh
+        run: packaging/build_windows.ps1
+
+      - name: Self-test the built executable
+        shell: pwsh
+        run: |
+          & "dist/AutoTextTyper/AutoTextTyper.exe" --self-test
+
+      # Same per-pattern check as the macOS jobs; see the comment there for
+      # why one if-no-files-found over two globs is not enough.
+      - name: Verify every Windows artifact was produced
+        shell: pwsh
+        run: |
+          $ok = $true
+          foreach ($pattern in @(
+            "dist/AutoTextTyper-*-Windows-x64-Setup.exe",
+            "dist/AutoTextTyper-*-Windows-x64-portable.zip"
+          )) {
+            $found = @(Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue)
+            if ($found.Count -eq 0) {
+              Write-Output "::error::Release artifact missing: nothing matched $pattern"
+              $ok = $false
+            } else {
+              Write-Output "ok: $pattern -> $($found.Name -join ', ')"
+            }
+          }
+          if (-not $ok) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: |
+            dist/AutoTextTyper-*-Windows-x64-Setup.exe
+            dist/AutoTextTyper-*-Windows-x64-portable.zip
+          if-no-files-found: error
+
+  linux:
+    needs: version-guard
+    # Deliberately the same older-glibc runner as CI (not ubuntu-latest):
+    # a binary linked against an older glibc keeps running on newer
+    # distros, but not the other way around, so this maximizes how many
+    # users' systems the resulting AppImage/tarball actually run on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libegl1 \
+            libgl1 \
+            libfuse2 \
+            file \
+            xvfb
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build,gui]"
+
+      - name: Build
+        run: packaging/build_linux.sh
+
+      - name: Self-test the built executable
+        run: xvfb-run -a dist/auto-text-typer/auto-text-typer --self-test
+
+      - name: Verify every Linux artifact was produced
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            if ! compgen -G "$1" > /dev/null; then
+              echo "::error::Release artifact missing: nothing matched $1"
+              return 1
+            fi
+            echo "ok: $1 -> $(compgen -G "$1" | tr '\n' ' ')"
+          }
+          rc=0
+          check "dist/AutoTextTyper-*-Linux-x86_64.AppImage" || rc=1
+          check "dist/AutoTextTyper-*-Linux-x86_64.tar.gz" || rc=1
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64
+          path: |
+            dist/AutoTextTyper-*-Linux-x86_64.AppImage
+            dist/AutoTextTyper-*-Linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    # macos-x86_64 is listed here so this job *waits* for it -- without that
+    # the Intel artifact could still be uploading while the release is being
+    # published, and would silently miss the release it belongs to.
+    needs: [version-guard, macos-arm64, macos-x86_64, windows, linux]
+    # ...but it is deliberately absent from the conditions below, so a broken
+    # or retired Intel runner cannot turn a tag into a release that produced
+    # nothing. The three long-proven platforms plus the version guard must all
+    # be green; macos-x86_64 may fail, and when it does the run still goes red
+    # in the UI (no continue-on-error) so the failure is visible, while the
+    # other artifacts publish.
+    #
+    # !cancelled() rather than always(): this has to survive a *failed*
+    # dependency, but a run someone cancelled on purpose must not publish.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && needs.version-guard.result == 'success'
+      && needs.macos-arm64.result == 'success'
+      && needs.windows.result == 'success'
+      && needs.linux.result == 'success'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # download-artifact is v8 while every upload-artifact above is v7, and
+      # that is the intended pair, not a typo. v7 added unzipped single-file
+      # uploads (`archive: false`); v8 is the release that can download them,
+      # and download-artifact's own README pairs v7 uploads with v8 downloads.
+      # Nothing here sets `archive: false` (that mode takes exactly one file,
+      # and each artifact above is two), but move the two actions together
+      # rather than matching their major numbers.
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist-artifacts
+
+      # Pinned to a full commit SHA, not the mutable v3 tag: this is the only
+      # job in the workflow holding `contents: write`, so whoever controls
+      # what this action resolves to can write to the repository. A major-
+      # version tag is repointed by the action's maintainers at will, which
+      # means `@v3` is a promise about semantics, not about code. The trailing
+      # comment is the human-readable half of the pin -- keep both in step
+      # when bumping, and resolve the SHA of the *commit* with
+      #   gh api repos/softprops/action-gh-release/git/ref/tags/<tag>
+      # rather than copying one from documentation. That call returns the
+      # commit only for a lightweight tag (v2.6.2 was one). For an annotated
+      # tag (v3.0.4 is one) it returns the tag object, whose SHA is not a
+      # commit and cannot be used in `uses:`; when its "type" is "tag", follow
+      # it once more with
+      #   gh api repos/softprops/action-gh-release/git/tags/<that sha> --jq .object.sha
+      #
+      # fail_on_unmatched_files guarantees this never publishes an empty
+      # release: the `if` above already requires three build jobs to have
+      # succeeded, and this catches the remaining case where their artifacts
+      # somehow did not land in dist-artifacts/.
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: dist-artifacts/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
