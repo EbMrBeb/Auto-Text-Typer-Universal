@@ -436,7 +436,8 @@ class TypePage(QWidget):
         self.text_edit = _DropTextEdit()
         self.text_edit.setPlaceholderText(
             "Paste or type the text you want typed for you — an essay, an email, "
-            "anything. Drop a .txt or .md file here, too."
+            "anything. Drop a .txt or .md file here, too. For a Word file or a "
+            "Google Doc, use the box above this one."
         )
         self.text_edit.setAccessibleName("Text to type")
         self.text_edit.setAccessibleDescription(
@@ -654,7 +655,22 @@ class TypePage(QWidget):
         meta_row.addWidget(self.run_elapsed_label)
         layout.addLayout(meta_row)
 
+        # What a first-time user most wants to know while the keyboard is being used for them.
+        self.run_hint_label = WrappingLabel(self._run_hint_text())
+        self.run_hint_label.setObjectName("MutedLabel")
+        layout.addWidget(self.run_hint_label)
+
         return panel
+
+    def _run_hint_text(self) -> str:
+        """Reassurance shown for the whole run: where the typing goes, and how to end it."""
+        settings = self._settings_store.settings
+        esc = settings.global_hotkeys_enabled and settings.hotkeys.get("stop") == "<esc>"
+        stop = "Stop, or press Esc," if esc else "Stop"
+        return (
+            "It types into whichever window has focus, so leave the keyboard and mouse alone "
+            f"until it finishes. Clicking elsewhere sends the typing there. {stop} ends it at once."
+        )
 
     # -- profiles -----------------------------------------------------------------
 
@@ -1238,6 +1254,7 @@ class TypePage(QWidget):
         self.run_panel_widget.setVisible(running)
         self._refresh_enabled()
         if running:
+            self.run_hint_label.setText(self._run_hint_text())
             self.run_progress_bar.setRange(0, 0)
             self.run_progress_bar.setValue(0)
             self.run_percent_label.setText("0%")

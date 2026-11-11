@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
         else:
             self.permission_chip.setText("Permission needed - Fix")
             self.permission_chip.setProperty("state", "warning")
-            self.permission_chip.setToolTip("Auto Text Typer can't type yet. Click to fix it.")
+            self.permission_chip.setToolTip("Your computer is not letting Auto Text Typer type yet. Click to see how to allow it.")
         # A screen reader gets the state as the control's value, not just a label.
         self.permission_chip.setAccessibleDescription(self.permission_chip.text())
         self._refresh_chip_icon()
