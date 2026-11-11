@@ -61,7 +61,7 @@ class ImportBar(QWidget):
         row = QHBoxLayout()
         row.setSpacing(8)
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("Paste a Google Docs link, or choose a file")
+        self.edit.setPlaceholderText("Have a Word file or a Google Doc? Paste its link or choose the file")
         self.edit.setAccessibleName("Document link or file")
         self.edit.setToolTip(
             "A Google Docs or Google Drive link, or the location of a .docx, .html, .zip, "

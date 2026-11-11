@@ -19,6 +19,13 @@ from auto_essay_typer.gui.theme import Tokens
 from auto_essay_typer.platforms import OperatingSystem, PermissionStatus
 
 
+#: Why a typing app asks for this permission, shown above the steps.
+WHY_TEXT = (
+    "Auto Text Typer types by pressing keys for you, and your computer only allows that "
+    "for apps you approve. It presses keys only while a run is going, and Stop ends a run at once."
+)
+
+
 def prettify_dashes(text: str) -> str:
     """Typographic dashes for text written in ASCII.
 
@@ -72,6 +79,12 @@ class PermissionDialog(QDialog):
         self._summary_label = QLabel(prettify_dashes(status.summary))
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
+
+        # Typing into other apps sounds alarming unexplained, so say what it is for.
+        self._why_label = QLabel(WHY_TEXT)
+        self._why_label.setObjectName("MutedLabel")
+        self._why_label.setWordWrap(True)
+        layout.addWidget(self._why_label)
 
         self._steps_label = QLabel(self._format_steps(status.fix_steps))
         self._steps_label.setWordWrap(True)

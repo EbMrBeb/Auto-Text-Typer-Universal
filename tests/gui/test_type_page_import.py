@@ -64,7 +64,7 @@ def test_a_new_page_is_in_plain_text_mode_with_the_document_widgets_hidden(type_
 def test_the_import_row_has_a_placeheld_box_and_import_and_browse_buttons(type_page_rig):
     page = type_page_rig().page
     bar = page.import_bar
-    assert bar.edit.placeholderText() == "Paste a Google Docs link, or choose a file"
+    assert bar.edit.placeholderText() == "Have a Word file or a Google Doc? Paste its link or choose the file"
     assert bar.import_button.text() == "Import"
     assert bar.browse_button.text() == "Browse…"
     for control in (bar.edit, bar.import_button, bar.browse_button):

@@ -129,7 +129,9 @@ def check_input_permission(
             summary="Auto Text Typer needs Accessibility access to type into other apps.",
             fix_steps=(
                 "Open System Settings > Privacy & Security > Accessibility.",
-                "Turn on Auto Text Typer.",
+                "Turn on Auto Text Typer. If it is already in the list but typing still does not "
+                "work, turn it off and on again: macOS can keep a grant that no longer matches "
+                "this copy of the app.",
                 "Quit and reopen Auto Text Typer -- macOS does not grant "
                 "permission to a process that is already running.",
             ),
