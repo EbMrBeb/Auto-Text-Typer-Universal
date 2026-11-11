@@ -364,6 +364,27 @@ def test_a_google_notes_own_text_is_left_out_and_the_panel_says_so():
     assert "the text of the note" in line, line
 
 
+@pytest.mark.parametrize("paragraphs", [2, 4])
+def test_every_paragraph_of_a_google_note_is_left_out_not_only_the_first(paragraphs):
+    """The sentence says the text of the note is left out, so for a note with several paragraphs
+    the reader has to leave out every one of them. Google opens only the first with the back-link."""
+    later = "".join(
+        f"<p><span>Paragraph {n} of the note: {_NOTE_TEXT}</span></p>" for n in range(2, paragraphs + 1)
+    )
+    html = (
+        '<p>The first claim<sup><a href="#ftnt1" id="ftnt_ref1">[1]</a></sup> rests on one source.</p>'
+        f'<div><p><a href="#ftnt_ref1" id="ftnt1">[1]</a><span> {_NOTE_TEXT}</span></p>{later}</div>'
+    )
+    document, warnings = parse_gdocs_html(html)
+
+    assert _all_typed(document) == "The first claim rests on one source."
+    assert _NOTE_TEXT not in _all_typed(document), "no paragraph of the note's text is typed anywhere"
+
+    (line,) = explain_warnings(warnings, [], "Google Docs")
+    assert line.startswith("1 footnote, endnote or comment will be left out"), "one note, not one per paragraph"
+    assert "the text of the note" in line, line
+
+
 def test_several_notes_are_worded_in_the_plural():
     reference, part_name, part_xml = _NOTE_PARTS["footnote"]
     body = f"<w:p><w:r>{reference}</w:r><w:r>{reference}</w:r><w:r>{reference}</w:r></w:p>"

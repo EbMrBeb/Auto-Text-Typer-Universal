@@ -76,6 +76,18 @@ def test_html_export_pipeline_end_to_end():
     _assert_pipeline_reproduces(doc)
 
 
+def test_html_export_with_a_long_footnote_pipeline_end_to_end():
+    doc, report = load_document(str(FIXTURES / "gdocs_export_footnotes_long.html"))
+
+    # Both notes, every paragraph of the first one, are named in the report and none is typed.
+    assert report.warnings == (
+        "2 footnote/endnote/comment references dropped, along with the text of the note",
+    )
+    assert doc.plain_text() == "The first claim rests on one source.\nThe second claim rests on another."
+
+    _assert_pipeline_reproduces(doc)
+
+
 # --- a test-built .docx ------------------------------------------------------
 
 _W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
