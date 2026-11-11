@@ -93,11 +93,11 @@ def test_html_export_with_a_long_footnote_pipeline_end_to_end():
 _W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 
 
-def _build_docx(body_xml: str) -> bytes:
+def _build_docx(body_xml: str, parts: dict[str, str] | None = None) -> bytes:
     """A minimal in-memory .docx: just enough zip/XML structure to parse.
 
     Mirrors the helper in tests/test_importers_docx.py -- no binary fixture
-    is committed to the repo.
+    is committed to the repo. ``parts`` are further files in the package by name.
     """
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -111,6 +111,8 @@ def _build_docx(body_xml: str) -> bytes:
             f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             f"<w:document {_W}><w:body>{body_xml}</w:body></w:document>",
         )
+        for name, xml in (parts or {}).items():
+            zf.writestr(name, f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{xml}')
     return buf.getvalue()
 
 
@@ -136,6 +138,27 @@ def test_docx_pipeline_end_to_end(tmp_path):
     docx_path.write_bytes(_build_docx(_DOCX_BODY))
 
     doc, _ = load_document(str(docx_path))
+
+    _assert_pipeline_reproduces(doc)
+
+
+def test_docx_with_a_header_and_footer_pipeline_end_to_end(tmp_path):
+    docx_path = tmp_path / "essay.docx"
+    docx_path.write_bytes(
+        _build_docx(
+            _DOCX_BODY,
+            parts={
+                "word/header1.xml": f"<w:hdr {_W}><w:p><w:r><w:t>Smith 1</w:t></w:r></w:p></w:hdr>",
+                "word/footer1.xml": f"<w:ftr {_W}><w:p><w:r><w:t>Confidential draft</w:t></w:r></w:p></w:ftr>",
+            },
+        )
+    )
+
+    doc, report = load_document(str(docx_path))
+
+    # What Word keeps outside the body is named in the report and is not typed.
+    assert report.warnings == ("2 headers or footers not reproduced (dropped)",)
+    assert "Smith" not in doc.plain_text() and "Confidential" not in doc.plain_text()
 
     _assert_pipeline_reproduces(doc)
 

@@ -23,12 +23,14 @@ from auto_essay_typer.importers.docx import parse_docx
 #: Every namespace a fixture body below needs declared on the root element:
 #: WordprocessingML itself, plus the three Word uses for shapes (``v`` for the
 #: old VML picture syntax, ``wps`` for the modern one, ``mc`` for the wrapper
-#: holding both).
+#: holding both), and ``r`` for the relationship ids a section's header and
+#: footer references carry.
 _W = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:v="urn:schemas-microsoft-com:vml" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
-    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 )
 
 
@@ -843,6 +845,181 @@ def test_a_cell_whose_rows_sit_in_a_content_control_is_kept():
     assert [p.text for p in doc.paragraphs] == ["controlled row"]
 
 
+# --- headers and footers: reported, because they are not part of the body ------------
+#
+# Word keeps a header or footer in a part of its own, apart from the body, and nothing in it
+# is typed. A document that has one has to say so: the words in it (a name and a page number
+# at the top of every page, say) are the writer's own.
+
+_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+#: The three places a header or footer can show: the pages after the first, the first
+#: page, and the even pages. Only the first is ever used by a document with one section
+#: and no options set.
+_REFERENCE_TYPES = ("default", "first", "even")
+
+
+def _header(*paragraphs: str) -> str:
+    return f"<w:hdr {_W}>{''.join(paragraphs)}</w:hdr>"
+
+
+def _footer(*paragraphs: str) -> str:
+    return f"<w:ftr {_W}>{''.join(paragraphs)}</w:ftr>"
+
+
+def _words(text: str) -> str:
+    return f'<w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>'
+
+
+#: What Word leaves behind when someone clicks into a header and out again: a part, an empty
+#: paragraph, nothing to show.
+_NOTHING = '<w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr></w:p>'
+
+#: A page number as Word writes it: the field, and the number it showed when it was saved.
+_PAGE_NUMBER = (
+    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>'
+    '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r>'
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+)
+
+#: The same field from a program that does not save the number: Word works it out when it
+#: lays the page out, so the page has one, but no text of it is in the file.
+_PAGE_NUMBER_NOT_SAVED = (
+    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>'
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+)
+
+_BODY_OF_ONE_PARAGRAPH = "<w:p><w:r><w:t>Body text.</w:t></w:r></w:p>"
+
+
+def _word_file_with(parts: dict[str, str], *, linked: bool = True) -> bytes:
+    """A .docx with ``_BODY_OF_ONE_PARAGRAPH`` and the header and footer parts named in ``parts``.
+
+    ``parts`` is keyed by part name without the folder or extension (``"header1"``, ``"footer1"``).
+    ``linked`` writes them as Word does, with a section at the end of the body that refers to each
+    and a relationships part that says where it is. ``linked=False`` is how the rest of this file
+    builds a package: the parts, and nothing else.
+    """
+    package = {f"word/{name}.xml": xml for name, xml in parts.items()}
+    section = ""
+    if linked:
+        references, relationships = [], []
+        for number, name in enumerate(parts, start=1):
+            kind = "header" if name.startswith("header") else "footer"
+            reference_type = _REFERENCE_TYPES[(number - 1) % len(_REFERENCE_TYPES)]
+            references.append(f'<w:{kind}Reference w:type="{reference_type}" r:id="rId{number}"/>')
+            relationships.append(
+                f'<Relationship Id="rId{number}" Type="{_RELATIONSHIP_TYPE}/{kind}" Target="{name}.xml"/>'
+            )
+        section = f"<w:sectPr>{''.join(references)}</w:sectPr>"
+        package["word/_rels/document.xml.rels"] = (
+            f'<Relationships xmlns="{_RELATIONSHIPS_NS}">{"".join(relationships)}</Relationships>'
+        )
+    return _build_docx(_BODY_OF_ONE_PARAGRAPH + section, parts=package)
+
+
+def test_a_header_and_a_footer_are_reported_not_lost_in_silence():
+    doc, warnings = parse_docx(
+        _word_file_with({"header1": _header(_words("Smith 1")), "footer1": _footer(_words("Confidential draft"))})
+    )
+    assert doc.plain_text() == "Body text."
+    assert warnings == ("2 headers or footers not reproduced (dropped)",)
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [{"header1": _header(_words("Smith 1"))}, {"footer1": _footer(_words("Confidential draft"))}],
+    ids=["header", "footer"],
+)
+def test_one_header_or_footer_is_reported_as_one(parts):
+    doc, warnings = parse_docx(_word_file_with(parts))
+    assert doc.plain_text() == "Body text."
+    assert warnings == ("1 header or footer not reproduced (dropped)",)
+
+
+def test_a_header_and_a_footer_that_hold_nothing_are_not_reported():
+    # Word writes a part for a header the moment someone clicks into it. Nothing is lost.
+    doc, warnings = parse_docx(
+        _word_file_with({"header1": _header(_NOTHING), "footer1": _footer(_NOTHING, _words("   "))})
+    )
+    assert doc.plain_text() == "Body text."
+    assert warnings == ()
+
+
+def test_only_the_header_or_footer_with_something_in_it_is_reported():
+    _doc, warnings = parse_docx(
+        _word_file_with({"header1": _header(_words("Smith 1")), "footer1": _footer(_NOTHING)})
+    )
+    assert warnings == ("1 header or footer not reproduced (dropped)",)
+
+
+@pytest.mark.parametrize(
+    "footer",
+    [_footer(_PAGE_NUMBER), _footer(_PAGE_NUMBER_NOT_SAVED), _footer('<w:p><w:fldSimple w:instr=" PAGE "/></w:p>')],
+    ids=["number saved with the field", "number not saved", "simple field, number not saved"],
+)
+def test_a_footer_that_is_only_a_page_number_is_reported(footer):
+    _doc, warnings = parse_docx(_word_file_with({"footer1": footer}))
+    assert warnings == ("1 header or footer not reproduced (dropped)",)
+
+
+def test_a_header_with_words_and_a_page_number_is_reported_once():
+    # The usual running head: a name, then the page number.
+    running_head = '<w:p><w:r><w:t xml:space="preserve">Smith </w:t></w:r>' + _PAGE_NUMBER[len("<w:p>"):]
+    _doc, warnings = parse_docx(_word_file_with({"header1": _header(running_head)}))
+    assert warnings == ("1 header or footer not reproduced (dropped)",)
+
+
+def test_each_header_and_footer_with_something_in_it_is_counted_once():
+    # A different first page, and different even pages, each have a header part of their own.
+    parts = {
+        "header1": _header(_words("Smith 1")),
+        "header2": _header(_words("Title page")),
+        "header3": _header(_words("Smith 2")),
+        "footer1": _footer(_PAGE_NUMBER),
+    }
+    _doc, warnings = parse_docx(_word_file_with(parts))
+    assert warnings == ("4 headers or footers not reproduced (dropped)",)
+
+
+def test_a_header_is_found_without_the_section_or_relationships_that_point_to_it():
+    # The other fixtures in this file are the parts alone, so this is how a test builds one.
+    _doc, warnings = parse_docx(_word_file_with({"header1": _header(_words("Smith 1"))}, linked=False))
+    assert warnings == ("1 header or footer not reproduced (dropped)",)
+
+
+def test_a_document_with_notes_and_comments_but_no_header_reports_no_header():
+    # footnotes.xml and the like start the way footer1.xml does. They are not one.
+    reference = '<w:footnoteReference w:id="2"/>'
+    notes = {
+        "word/footnotes.xml": f'<w:footnotes {_W}><w:footnote w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+        "</w:footnote></w:footnotes>",
+        "word/endnotes.xml": f'<w:endnotes {_W}><w:endnote w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+        "</w:endnote></w:endnotes>",
+        "word/comments.xml": f'<w:comments {_W}><w:comment w:id="2"><w:p><w:r><w:t>Smith, p. 14.</w:t></w:r></w:p>'
+        "</w:comment></w:comments>",
+    }
+    body = f"<w:p><w:r><w:t>a claim</w:t></w:r><w:r>{reference}</w:r></w:p>"
+    _doc, warnings = parse_docx(_build_docx(body, parts=notes))
+    assert not any("header" in w for w in warnings), warnings
+
+
+def test_header_text_is_never_typed_into_the_body():
+    parts = {"header1": _header(_words("Smith 1")), "footer1": _footer(_words("Confidential draft"))}
+    doc, _warnings = parse_docx(_word_file_with(parts))
+    assert "Smith" not in doc.plain_text()
+    assert "Confidential" not in doc.plain_text()
+
+
+def test_a_header_with_a_doctype_is_refused_like_any_other_part():
+    header = f'<?xml version="1.0"?><!DOCTYPE w:hdr [<!ENTITY x "y">]><w:hdr {_W}>{_words("&x;")}</w:hdr>'
+    with pytest.raises(ValueError):
+        parse_docx(_word_file_with({"header1": header}))
+
+
 # --- the whole contract: nothing is lost in silence -------------------------------
 
 
@@ -867,7 +1044,15 @@ def test_every_piece_of_source_text_is_either_typed_or_named_in_the_report():
         "<w:p><w:r><w:t>cell paragraph two</w:t></w:r></w:p>"
         "</w:tc></w:tr></w:tbl>"
     )
-    doc, warnings = parse_docx(_build_docx(body))
+    doc, warnings = parse_docx(
+        _build_docx(
+            body,
+            parts={
+                "word/header1.xml": _header(_words("text in a header")),
+                "word/footer1.xml": _footer(_words("text in a footer")),
+            },
+        )
+    )
     typed = doc.plain_text()
     reported = " ".join(warnings)
 
@@ -887,6 +1072,11 @@ def test_every_piece_of_source_text_is_either_typed_or_named_in_the_report():
     assert "tracked changes" in reported
     assert "text in a text box" not in typed
     assert "text in a text box" in reported
+
+    # So are a header and a footer, which Word keeps apart from the body.
+    assert "text in a header" not in typed
+    assert "text in a footer" not in typed
+    assert "2 headers or footers" in reported
 
     # And nothing was fused onto its neighbour.
     assert "cell paragraph onecell paragraph two" not in typed

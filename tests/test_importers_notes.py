@@ -47,6 +47,8 @@ _EVERYTHING = {
         ),
         (NoteKind.SYMBOL, 1, "1 special symbol will be left out"),
         (NoteKind.SYMBOL, 2, "2 special symbols will be left out"),
+        (NoteKind.HEADER_FOOTER, 1, "1 header or footer not reproduced (dropped)"),
+        (NoteKind.HEADER_FOOTER, 3, "3 headers or footers not reproduced (dropped)"),
     ],
 )
 def test_a_counted_kind_is_worded_by_its_count(kind, count, message):

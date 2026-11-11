@@ -177,6 +177,21 @@ def _say_text_box(match: re.Match[str]) -> str:
     )
 
 
+def _say_header_footer(match: re.Match[str]) -> str:
+    """A header or footer is left out whole, with whatever is in it.
+
+    Word keeps them apart from the body, so nothing in them is typed, and the words in one
+    are the person's own: a name and a page number at the top of every page, say. Saying only
+    that a header will be left out sends nobody to look for what was in it.
+    """
+    count = _count(match)
+    return (
+        f"{count} {_plural(count, 'header or footer', 'headers or footers')} will be left out, "
+        f"along with any text or page numbers in {_plural(count, 'it', 'them')}. "
+        f"If you need {_plural(count, 'it', 'them')}, add {_plural(count, 'it', 'them')} by hand"
+    )
+
+
 def _say_tracked_changes(match: re.Match[str]) -> str:
     """The app chose which version of a document with tracked changes to type; say so."""
     return (
@@ -223,6 +238,9 @@ _IMPORT_RULES: dict[NoteKind, _ImportRule] = {
             re.DOTALL,
         ),
         _say_text_box,
+    ),
+    NoteKind.HEADER_FOOTER: _ImportRule(
+        re.compile(r"^(\d+) headers? or footers? not reproduced \(dropped\)$"), _say_header_footer
     ),
     NoteKind.TRACKED_CHANGES: _ImportRule(
         re.compile(

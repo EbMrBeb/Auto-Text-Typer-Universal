@@ -3,8 +3,12 @@
 A ``.docx`` is a zip of XML parts. Only ``word/document.xml`` (the body),
 ``word/styles.xml`` (paragraph style id -> display name, e.g. ``"Heading1"``
 -> ``"heading 1"``) and ``word/numbering.xml`` (list id -> bullet/numbered,
-per level) are read; everything else in the package (theme, settings,
-embedded media, ...) is ignored. Uses only ``zipfile`` and
+per level) are read for what they say; everything else in the package (theme,
+settings, embedded media, ...) is ignored, with one exception. Word keeps each
+header and footer in a part of its own, and nothing in one is typed, so those
+parts (``word/header1.xml``, ``word/footer1.xml``, ...) are opened to learn
+whether they hold anything, and each that does is reported
+(see :func:`_record_headers_and_footers`). Uses only ``zipfile`` and
 ``xml.etree.ElementTree`` from the standard library, per this project's
 no-new-dependencies rule.
 
@@ -21,9 +25,9 @@ a silently incomplete essay. So the walk descends through everything that
 wraps text without being text -- hyperlinks, content controls, smart tags,
 fields -- and resolves tracked changes to the view Word shows, accepting
 insertions and leaving deletions out. What it cannot turn into keystrokes
-(a picture, a shape's text, a footnote marker, a symbol-font character) is
-counted and named in the warnings this module returns, never dropped in
-silence.
+(a picture, a shape's text, a footnote marker, a symbol-font character, a
+header or footer) is counted and named in the warnings this module returns,
+never dropped in silence.
 """
 
 from __future__ import annotations
@@ -261,6 +265,17 @@ _NOTE_REFERENCE_TAGS = frozenset(
 
 #: How much of a text box's wording goes in the warning about it.
 _TEXT_BOX_EXCERPT_CHARS = 60
+
+#: Where Word keeps a header or a footer: a part of its own, apart from the body, named for
+#: what it is and numbered (``word/header1.xml``, ``word/footer2.xml``). The header for a
+#: document's first page, or its even pages, is a part of its own too. Nothing else matches:
+#: ``word/footnotes.xml`` starts the way ``word/footer1.xml`` does and is not one.
+_HEADER_FOOTER_PART_RE = re.compile(r"^word/(?:header|footer)\d*\.xml$")
+
+#: Fields show something on the page without a ``w:t`` having to say what: Word works a
+#: page number out when it lays the page out. It saves the number it got beside the field,
+#: but not every program that writes a field does.
+_FIELD_TAGS = frozenset({_w("fldSimple"), _w("instrText")})
 
 
 @dataclass
@@ -585,6 +600,42 @@ def _read_part(zf: zipfile.ZipFile, name: str) -> ET.Element | None:
     return _safe_fromstring(data)
 
 
+def _has_something_to_show(part: ET.Element) -> bool:
+    """Whether a header or footer part has anything in it that Word would put on the page.
+
+    Words, or a field such as the page number (see ``_FIELD_TAGS``). A part with neither is
+    an empty paragraph, which Word leaves behind whenever someone clicks into a header and out
+    again, and nothing is lost with it. Deleted text is not ``w:t``, so it does not count: it
+    is not on the page in the final version this reader types.
+    """
+    for element in part.iter():
+        if element.tag in _FIELD_TAGS:
+            return True
+        if element.tag == _w("t") and (element.text or "").strip():
+            return True
+    return False
+
+
+def _record_headers_and_footers(zf: zipfile.ZipFile, state: _ParseState) -> None:
+    """Count each header and footer part that has something in it as a loss.
+
+    Word keeps them apart from the body, so none of what is in them reaches the typed
+    text, and the writer's own words there (a name and a page number at the top of every
+    page, say) would go missing without a word about it. A part with nothing in it is not
+    a loss and is not counted.
+
+    The parts are found by their names, as this module finds all of its parts, and not by
+    following the relationships that point to them: a part nothing points to is counted too,
+    which is the safe way to be wrong.
+    """
+    for name in zf.namelist():
+        if not _HEADER_FOOTER_PART_RE.match(name):
+            continue
+        part = _read_part(zf, name)
+        if part is not None and _has_something_to_show(part):
+            state.warnings[NoteKind.HEADER_FOOTER] += 1
+
+
 def parse_docx(data: bytes) -> tuple[Document, tuple[str, ...]]:
     """Parse raw ``.docx`` bytes into a ``Document`` plus aggregated warnings.
 
@@ -598,6 +649,7 @@ def parse_docx(data: bytes) -> tuple[Document, tuple[str, ...]]:
     except zipfile.BadZipFile as exc:
         raise _DocxError("not a valid Word document: not a zip archive") from exc
 
+    state = _ParseState()
     with zf:
         try:
             document_xml = zf.read(_DOCUMENT_XML)
@@ -608,10 +660,10 @@ def parse_docx(data: bytes) -> tuple[Document, tuple[str, ...]]:
         document_root = _safe_fromstring(document_xml)
         styles_root = _read_part(zf, _STYLES_XML)
         numbering_root = _read_part(zf, _NUMBERING_XML)
+        _record_headers_and_footers(zf, state)
 
     names = _parse_styles(styles_root)
     numbering = _parse_numbering(numbering_root)
-    state = _ParseState()
 
     body = _find(document_root, "body")
     paragraphs = _parse_block_content(body, names, numbering, state)
