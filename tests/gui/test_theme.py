@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 
@@ -342,6 +343,25 @@ def test_linux_stack_falls_back_through_common_sans_serifs():
     assert resolve_ui_font_families(OperatingSystem.LINUX, available) == ["DejaVu Sans", "Liberation Sans"]
 
 
+@pytest.mark.parametrize("placeholder", ["Sans Serif", "sans-serif", "Sans"])
+def test_a_generic_placeholder_is_never_chosen_even_when_the_font_database_lists_it(placeholder):
+    # Qt reports "Sans Serif" as the system font when no desktop theme runs, and on Linux the font
+    # database can list it as installed. It names no font, so the real stack must win.
+    available = [placeholder, "DejaVu Sans", "Liberation Sans"]
+    families = resolve_ui_font_families(OperatingSystem.LINUX, available, platform_default=placeholder)
+    assert families == ["DejaVu Sans", "Liberation Sans"]
+
+
+def test_only_a_generic_placeholder_available_means_leave_the_qt_default_alone():
+    assert resolve_ui_font_families(OperatingSystem.LINUX, ["Sans Serif"], platform_default="Sans Serif") == []
+    assert build_app_font(OperatingSystem.LINUX, ["Sans Serif"], platform_default="Sans Serif") is None
+
+
+def test_the_systems_own_ui_font_still_comes_first():
+    families = resolve_ui_font_families(OperatingSystem.LINUX, ["DejaVu Sans", "Ubuntu"], platform_default="Ubuntu")
+    assert families == ["Ubuntu", "DejaVu Sans"]
+
+
 def test_no_known_family_installed_yields_no_font_rather_than_a_missing_one():
     assert resolve_ui_font_families(OperatingSystem.MACOS, ["Zapfino"]) == []
     assert build_app_font(OperatingSystem.MACOS, ["Zapfino"], platform_default="Sans Serif") is None
@@ -357,7 +377,11 @@ def test_app_font_is_pixel_sized_so_it_matches_on_every_os(qtbot, qapp):
 
 def test_theme_manager_installs_a_font_that_really_exists(qtbot, qapp):
     if build_app_font() is None:
-        pytest.skip("none of the preferred UI font families is installed on this machine")
+        message = "none of the preferred UI font families is installed on this machine"
+        if os.environ.get("CI"):
+            # A skip here would turn the check into no signal at all; CI images must carry a font.
+            pytest.fail(f"{message}; install one in the CI workflow (fonts-dejavu-core)")
+        pytest.skip(message)
     ThemeManager(qapp)
     assert qapp.font().family() in QFontDatabase.families()
     assert qapp.font().family() != "Sans Serif"
