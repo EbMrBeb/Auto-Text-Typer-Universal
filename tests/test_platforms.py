@@ -7,6 +7,7 @@ tests never depend on (or alter) the real OS, environment, or home directory
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,12 @@ def test_macos_permission_uses_real_probe_by_default():
     # A safe, read-only smoke test of the real AXIsProcessTrusted() wiring
     # (no options/prompt, so this cannot pop a system dialog) -- everything
     # else in this file injects a fake probe instead.
+    if sys.platform != "darwin":
+        # The probe loads a macOS framework, so anywhere else it cannot run: say so loudly (an
+        # OSError naming the framework) instead of passing without having tried.
+        with pytest.raises(OSError, match="ApplicationServices"):
+            check_input_permission(os_=OperatingSystem.MACOS)
+        return
     status = check_input_permission(os_=OperatingSystem.MACOS)
     assert isinstance(status, PermissionStatus)
     assert isinstance(status.granted, bool)

@@ -125,6 +125,11 @@ class ShortcutRow(QWidget):
 
         self.action_label = QLabel(op_label(op))
         self.action_label.setObjectName("ShortcutAction")
+        # The two columns to its right are fixed, so this label is the only part of the row that can
+        # give way. Wrapped, its minimum width is its longest word instead of its whole text, so a
+        # wider font (Windows text, a larger size setting) wraps the name rather than pushing the
+        # page's content wider than the window.
+        self.action_label.setWordWrap(True)
         layout.addWidget(self.action_label, 1, Qt.AlignmentFlag.AlignTop)
 
         self.default_label = QLabel()

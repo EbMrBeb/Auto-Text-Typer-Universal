@@ -84,11 +84,17 @@ def test_an_elided_label_shortens_in_the_middle_to_fit_and_shows_it_all_when_the
     qtbot.addWidget(label)
     label.show()
     qtbot.waitExposed(label)
-    label.resize(160, 20)
+    # Half the width the whole text needs, in this font: how many characters that is differs
+    # between fonts (Windows text is wider than macOS text), so it is not a fixed pixel count.
+    width = label.fontMetrics().horizontalAdvance(full) // 2
+    label.resize(width, 20)
     shown = label.text()
     assert shown != full and "…" in shown
+    head, _, tail = shown.partition("…")
+    assert head and full.startswith(head), "the start survives"
+    assert tail and full.endswith(tail), "the end survives"
     assert shown.startswith("Imported") and shown.endswith(".docx"), "both ends survive"
-    assert label.fontMetrics().horizontalAdvance(shown) <= 160
+    assert label.fontMetrics().horizontalAdvance(shown) <= width
 
     label.resize(label.fontMetrics().horizontalAdvance(full) + 20, 20)
     assert label.text() == full

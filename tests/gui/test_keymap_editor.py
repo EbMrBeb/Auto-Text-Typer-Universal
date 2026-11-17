@@ -79,6 +79,22 @@ def _file_overrides(store) -> dict:
 # --- structure ---------------------------------------------------------------------------------
 
 
+def test_a_rows_minimum_width_does_not_depend_on_how_wide_its_command_name_draws(qtbot):
+    # Fonts differ (Windows text is wider than macOS text at the same size), so this does not
+    # compare against a pixel budget: it makes the name absurdly long and checks the row does
+    # not ask for more room because of it. The two columns beside the name are fixed, so the
+    # name has to be the part that gives way.
+    from auto_essay_typer.gui.keymap_editor import ShortcutRow
+
+    row = ShortcutRow(FormatOp.TOGGLE_BOLD)
+    qtbot.addWidget(row)
+    before = row.minimumSizeHint().width()
+    # Many short words: the longest word is no wider than before, so only the name's total
+    # width changes (a wrapped label asks for its longest word, an unwrapped one for it all).
+    row.action_label.setText("Toggle " + "bold " * 40)
+    assert row.minimumSizeHint().width() <= before + 4, "the name must wrap, not widen the row"
+
+
 def test_there_is_one_row_for_every_formatting_command(qtbot, qapp, tmp_path):
     editor, _store = _make(qtbot, qapp, tmp_path)
     assert list(editor.rows) == list(FormatOp)

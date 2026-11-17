@@ -9,6 +9,8 @@ fixture in ``conftest.py``) to prove the default wiring.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -798,7 +800,8 @@ def test_default_open_folder_opens_the_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url) or True))
     default_open_folder(tmp_path)
     assert len(opened) == 1
-    assert opened[0].toLocalFile() == str(tmp_path)
+    # Qt hands local paths back with forward slashes on every OS, so compare paths, not strings.
+    assert Path(opened[0].toLocalFile()) == tmp_path
 
 
 # --- theming ----------------------------------------------------------------------------------------------------------------------

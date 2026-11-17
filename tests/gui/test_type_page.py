@@ -410,7 +410,9 @@ def test_dropping_a_txt_file_loads_its_contents(qtbot, qapp, recording_driver_fa
     page, _controller, _kb = _make_page(qtbot, qapp, recording_driver_factory)
 
     dropped_file = tmp_path / "essay.txt"
-    dropped_file.write_text("Dropped file contents.\r\nSecond line.")
+    # Bytes, so the file really has CRLF line ends on every OS (write_text would turn the
+    # "\n" of "\r\n" into another "\r" on Windows).
+    dropped_file.write_bytes(b"Dropped file contents.\r\nSecond line.")
 
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(dropped_file))])

@@ -47,6 +47,9 @@ _DEFAULT_PIXEL_SIZE = 13
 #: Horizontal distance of one list nesting level; wide enough for a marker like "100.".
 _INDENT_WIDTH = 34
 
+#: Room kept between the widest list marker the view expects ("100.") and the text.
+_MARKER_GAP = 6
+
 #: Characters a text layout would act on rather than draw. A run never contains a
 #: newline, but a stray carriage return, a Unicode line or paragraph separator would
 #: split a block in two (and leave a list marker on only half of it), and U+FDD0/FDD1
@@ -195,8 +198,22 @@ class DocumentView(QTextEdit):
     # -- drawing ------------------------------------------------------------------------------------------
 
     def _base_pixel_size(self) -> int:
+        # A font given in pixels is used as given. Only a font given in points has to be
+        # converted, and that is the one QFontInfo is for.
+        explicit = self.font().pixelSize()
+        if explicit > 0:
+            return explicit
         size = QFontInfo(self.font()).pixelSize()
         return size if size > 0 else _DEFAULT_PIXEL_SIZE
+
+    def _indent_width(self) -> int:
+        """One list level's indent: wide enough for a three-digit number marker in this font.
+
+        A fixed number of pixels is only right for one font size; a wider font (or a
+        larger text-size setting) would otherwise draw the marker into the text.
+        """
+        marker = self.fontMetrics().horizontalAdvance("100.")
+        return max(_INDENT_WIDTH, marker + _MARKER_GAP)
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)
@@ -211,7 +228,7 @@ class DocumentView(QTextEdit):
             self.clear()
             text_document = self.document()
             text_document.setUndoRedoEnabled(False)
-            text_document.setIndentWidth(_INDENT_WIDTH)
+            text_document.setIndentWidth(self._indent_width())
             if self._model is None:
                 return
             # Drawn normalized, as the rest of the project compares documents: an empty
