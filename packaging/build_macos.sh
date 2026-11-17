@@ -9,10 +9,17 @@
 #   ATT_ENTRY          Entry script, relative to the repo root.
 #                       Default: packaging/launch_gui.py (the real GUI).
 #   ATT_TARGET_ARCH     universal2 | arm64 | x86_64 | unset (native).
+#   ATT_CODESIGN_IDENTITY
+#                       Code signing identity: the common name of a
+#                       certificate in your keychain ("Auto Text Typer
+#                       Local Signing", "Developer ID Application: ..."), or
+#                       its SHA-1 hash. Unset, empty or "-" means ad-hoc.
+#                       See docs/building.md ("Code signing on macOS").
 #
 # Usage:
 #   packaging/build_macos.sh
 #   ATT_TARGET_ARCH=universal2 packaging/build_macos.sh
+#   ATT_CODESIGN_IDENTITY="Auto Text Typer Local Signing" packaging/build_macos.sh
 #
 # universal2 requires every bundled native binary (Python itself, every C
 # extension, every Qt/pynput shared library) to already be a universal2
@@ -58,13 +65,59 @@ if [ ! -x "$MAIN_EXE" ]; then
     exit 1
 fi
 
+# "-" is codesign's own spelling of ad-hoc, so it is accepted as "unset".
+SIGN_IDENTITY="${ATT_CODESIGN_IDENTITY:-}"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    SIGN_IDENTITY=""
+fi
+
+# Signing is done here, after PyInstaller, and not by passing the identity to
+# the spec's EXE/BUNDLE: PyInstaller 6.x then adds --options=runtime (hardened
+# runtime, whose library validation rejects the bundled Python and Qt
+# libraries unless entitlements are supplied) and --timestamp (a network
+# call to Apple). A plain `codesign --force --deep` over the finished bundle
+# re-signs every nested Mach-O with the one identity and seals the bundle.
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "==> Signing with identity: $SIGN_IDENTITY"
+    if ! codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_PATH"; then
+        echo "error: codesign failed with identity '$SIGN_IDENTITY'." >&2
+        echo "       List the identities available to you with:" >&2
+        echo "         security find-identity -p codesigning" >&2
+        echo "       Refusing to fall back to an ad-hoc signature." >&2
+        exit 1
+    fi
+fi
+
 echo "==> Verifying code signature"
-if ! codesign --verify --deep --strict "$APP_PATH"; then
+if [ -n "$SIGN_IDENTITY" ]; then
+    codesign --verify --deep --strict "$APP_PATH"
+elif ! codesign --verify --deep --strict "$APP_PATH"; then
     echo "==> ad-hoc verification failed; re-signing ad-hoc (codesign --force --deep --sign -)"
     codesign --force --deep --sign - "$APP_PATH"
     codesign --verify --deep --strict "$APP_PATH"
 fi
 echo "==> Code signature OK"
+
+# Report what the bundle is actually signed with, and refuse to continue when
+# that is not what was asked for: a build meant to be signed must never ship
+# ad-hoc because a step above quietly did nothing.
+SIG_INFO="$(codesign -dvvv "$APP_PATH" 2>&1)"
+SIG_KIND="$(printf '%s\n' "$SIG_INFO" | sed -n 's/^Signature=//p')"
+SIG_TEAM="$(printf '%s\n' "$SIG_INFO" | sed -n 's/^TeamIdentifier=//p')"
+SIG_AUTH="$(printf '%s\n' "$SIG_INFO" | sed -n 's/^Authority=//p' | head -n 1)"
+SIG_HASH="$(printf '%s\n' "$SIG_INFO" | sed -n 's/^CDHash=//p')"
+SIG_REQ="$(codesign -d -r- "$APP_PATH" 2>&1 | sed -n 's/^# designated => //p')"
+if [ "$SIG_KIND" = "adhoc" ]; then
+    echo "==> Signed: AD-HOC (no stable identity; Accessibility permission will not survive a rebuild)"
+else
+    echo "==> Signed: ${SIG_AUTH:-unknown authority} (team: ${SIG_TEAM:-none})"
+fi
+echo "    CDHash: ${SIG_HASH:-unknown}"
+echo "    Designated requirement: ${SIG_REQ:-unknown}"
+if [ -n "$SIGN_IDENTITY" ] && [ "$SIG_KIND" = "adhoc" ]; then
+    echo "error: ATT_CODESIGN_IDENTITY is set but the bundle is ad-hoc signed." >&2
+    exit 1
+fi
 
 echo "==> Architectures in ${MAIN_EXE}:"
 lipo -archs "$MAIN_EXE"

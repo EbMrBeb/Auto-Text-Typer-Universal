@@ -20,9 +20,9 @@ Both need **macOS 15 (Sequoia) or newer**. A `.zip` of the same `.app` is
 published alongside each `.dmg`. Open the `.dmg` and drag **Auto Text Typer** to
 Applications.
 
-The app is **not signed with an Apple Developer ID and is not notarised** — the
-build only applies an ad-hoc signature. macOS will therefore refuse to open it
-on the first attempt. To allow it, once per installed copy:
+The app is **not signed with an Apple Developer ID and is not notarised** — unless
+its publisher has configured a signing certificate, the build only applies an
+ad-hoc signature. macOS will therefore refuse to open it on the first attempt. To allow it, once per installed copy:
 
 - Control-click (right-click) the app in Applications and choose **Open**, then
   **Open** again in the dialog; or
