@@ -40,6 +40,7 @@ from auto_essay_typer import app_settings, config
 from auto_essay_typer.actions import FormatOp
 from auto_essay_typer.gui.advanced_common import (
     SCROLLBAR_WIDTH,
+    FlowLayout,
     NoWheelComboBox,
     ThemedMixin,
     default_confirm,
@@ -192,8 +193,9 @@ class AdvancedPage(QWidget, ThemedMixin):
         picker.addWidget(self.profile_combo, 1)
         layout.addLayout(picker)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
+        # A flow, not a row: four buttons side by side set a floor under the window's width that a
+        # wider font raises, so on a narrow window the last one drops to a second line instead.
+        buttons = FlowLayout(spacing=8)
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("PrimaryButton")
         self.save_button.setAccessibleName("Save profile")
@@ -209,7 +211,6 @@ class AdvancedPage(QWidget, ThemedMixin):
         self.delete_button.setAccessibleName("Delete profile")
         self.delete_button.clicked.connect(self._on_delete)
         buttons.addWidget(self.delete_button)
-        buttons.addStretch(1)
         self.reset_button = QPushButton("Reset to defaults")
         self.reset_button.setObjectName("SecondaryButton")
         self.reset_button.setAccessibleName("Reset profile fields to defaults")

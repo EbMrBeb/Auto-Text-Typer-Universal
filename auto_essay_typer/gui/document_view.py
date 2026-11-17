@@ -44,6 +44,8 @@ from auto_essay_typer.document import (
 
 #: Fallback body size (in pixels) if the widget's font reports none.
 _DEFAULT_PIXEL_SIZE = 13
+_POINTS_PER_INCH = 72.0
+_POINTS_DPI = 96.0  # when no screen can say
 #: Horizontal distance of one list nesting level; wide enough for a marker like "100.".
 _INDENT_WIDTH = 34
 
@@ -198,13 +200,24 @@ class DocumentView(QTextEdit):
     # -- drawing ------------------------------------------------------------------------------------------
 
     def _base_pixel_size(self) -> int:
-        # A font given in pixels is used as given. Only a font given in points has to be
-        # converted, and that is the one QFontInfo is for.
-        explicit = self.font().pixelSize()
-        if explicit > 0:
-            return explicit
-        size = QFontInfo(self.font()).pixelSize()
-        return size if size > 0 else _DEFAULT_PIXEL_SIZE
+        """The body text size in pixels, for a font given in either pixels or points.
+
+        A QFont carries one unit; the other reads as -1. QFontInfo can convert a point
+        size but may itself report -1 (it did on Windows CI), so the point size is
+        converted by hand as the last resort before the default.
+        """
+        font = self.font()
+        if font.pixelSize() > 0:
+            return font.pixelSize()
+        measured = QFontInfo(font).pixelSize()
+        if measured > 0:
+            return measured
+        points = font.pointSizeF()
+        if points > 0:
+            screen = self.screen()
+            dpi = screen.logicalDotsPerInchY() if screen is not None else 0.0
+            return max(1, round(points * (dpi if dpi > 0 else _POINTS_DPI) / _POINTS_PER_INCH))
+        return _DEFAULT_PIXEL_SIZE
 
     def _indent_width(self) -> int:
         """One list level's indent: wide enough for a three-digit number marker in this font.
