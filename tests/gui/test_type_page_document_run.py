@@ -18,8 +18,26 @@ from auto_essay_typer.gui import run_controller as run_controller_module
 from auto_essay_typer.gui.pages import type_page as type_page_module
 from auto_essay_typer.keymaps import NO_OP
 from auto_essay_typer.planner import plan_document as real_plan_document
+from auto_essay_typer.platforms import OperatingSystem
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "gdocs_export_sample.html"
+
+#: An editor with unchecked shortcuts and no list shortcuts that every operating system offers.
+#: Microsoft Word has no Linux release, so it cannot stand in for "some other editor" here.
+OTHER_EDITOR = "libreoffice-writer"
+
+
+@pytest.fixture(autouse=True, params=list(OperatingSystem), ids=lambda os_: os_.value)
+def os_(request, monkeypatch) -> OperatingSystem:
+    """Run every test in this module as each operating system, whichever one runs the suite.
+
+    The picker only offers the editors a system supports, and falls back to the first one when
+    the saved choice is not among them. A test that hardcodes an editor missing from the machine
+    it runs on silently gets the fallback instead, passing on the Mac it was written on and
+    failing on Linux CI. Running as all three means a Mac catches that too.
+    """
+    monkeypatch.setattr(platforms, "current_os", lambda *args, **kwargs: request.param)
+    return request.param
 
 
 def _import(qtbot, page, source: str = str(FIXTURE)) -> None:
@@ -34,7 +52,9 @@ def _real_chords(keymap) -> set:
 
 
 def _pick(page, target_id: str) -> None:
-    page.target_combo.setCurrentIndex(page.target_combo.findData(target_id))
+    index = page.target_combo.findData(target_id)
+    assert index >= 0, f"{target_id!r} is not offered here; the picker lists {page.target_combo.count()} editors"
+    page.target_combo.setCurrentIndex(index)
 
 
 def _clean_profile(page) -> None:
@@ -148,17 +168,17 @@ def test_start_types_for_the_editor_chosen_in_the_picker(qtbot, type_page_rig):
     rig = type_page_rig()
     page = rig.page
     _import(qtbot, page)
-    _pick(page, "microsoft-word")
+    _pick(page, OTHER_EDITOR)
     session = page.document_session()
-    assert session.target.id == "microsoft-word"
+    assert session.target.id == OTHER_EDITOR
 
     with qtbot.waitSignal(rig.controller.finished, timeout=15000):
         page.start_button.click()
 
     (keyboard,) = rig.keyboards
-    assert rig.factory.keymaps == [targets.keymap_for("microsoft-word", platforms.current_os())]
+    assert rig.factory.keymaps == [targets.keymap_for(OTHER_EDITOR, platforms.current_os())]
     assert keyboard.text == session.adapted.plain_text()
-    # Word has no list shortcuts here, so the bullets are typed characters, not key presses.
+    # LibreOffice Writer has no list shortcuts, so the bullets are typed characters, not key presses.
     assert "• Top-level bullet item" in keyboard.text
     assert all(chord in _real_chords(session.keymap) for chord in keyboard.chords if chord != NO_OP)
 
@@ -297,11 +317,11 @@ def test_the_preview_of_an_unchecked_editor_carries_the_best_effort_caution(qtbo
     page.preview_button.click()
     assert shown_dialogs[-1].caution_label.isHidden() is True  # Google Docs' shortcuts are checked
 
-    _pick(page, "microsoft-word")
+    _pick(page, OTHER_EDITOR)
     page.preview_button.click()
     caution = shown_dialogs[-1].caution_label
     assert caution.isHidden() is False
-    assert "Microsoft Word" in caution.text() and "best effort" in caution.text()
+    assert targets.get_target(OTHER_EDITOR).name in caution.text() and "best effort" in caution.text()
 
 
 def test_the_preview_is_of_the_adapted_document_for_the_chosen_editor(qtbot, type_page_rig, shown_dialogs):

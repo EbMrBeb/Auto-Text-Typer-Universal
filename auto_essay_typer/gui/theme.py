@@ -224,6 +224,13 @@ _FONT_STACKS: dict[OperatingSystem, tuple[str, ...]] = {
     ),
 }
 
+#: Names Qt (and fontconfig) use for "some sans-serif font, you choose" rather than for a font.
+#: Qt's platform theme reports one of these as the system UI font when no desktop theme is
+#: running, and a Linux font database can list it as an installed family too, so a plain
+#: availability check lets it through. Requesting it hands the choice back to Qt's own
+#: substitution and skips the stack below, so it is never treated as a real family.
+_GENERIC_FAMILIES = frozenset({"sans serif", "sans", "sans-serif", "serif", "monospace", "system-ui"})
+
 #: Base UI text size. Pixel-sized (not point-sized) so 13 means 13 on every OS;
 #: Qt's own default is 13pt on macOS but 9pt (12px at 96 dpi) on Windows.
 BASE_FONT_PIXEL_SIZE = 13
@@ -240,10 +247,13 @@ def resolve_ui_font_families(
     UI font, when there is one) goes first: it is what "native" means on that
     machine. The per-OS stack follows. Only names present in ``available`` --
     compared case-insensitively -- are returned, spelled the way the font
-    database spells them, so every entry is a family that really exists.
+    database spells them, so every entry is a family that really exists. A generic
+    placeholder such as "Sans Serif" is not a family and is never returned, even as
+    ``platform_default`` and even when the font database lists it.
     """
     installed = {family.casefold(): family for family in available}
     wanted = ([platform_default] if platform_default else []) + list(_FONT_STACKS[os_])
+    wanted = [family for family in wanted if family.casefold() not in _GENERIC_FAMILIES]
     resolved: list[str] = []
     for family in wanted:
         real = installed.get(family.casefold())
@@ -268,8 +278,7 @@ def build_app_font(
     if platform_default is None:
         # On macOS and Windows this is the system UI font. On a platform with no
         # theme (offscreen, some bare Linux sessions) it is Qt's placeholder
-        # "Sans Serif", which usually is not installed -- the availability filter
-        # below drops it.
+        # "Sans Serif", which resolve_ui_font_families drops.
         platform_default = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
     families = resolve_ui_font_families(os_ or current_os(), available, platform_default)
     if not families:
