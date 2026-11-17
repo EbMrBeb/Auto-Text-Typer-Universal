@@ -26,7 +26,16 @@ import re
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from auto_essay_typer import platforms, targets
 from auto_essay_typer.actions import FormatOp
@@ -37,8 +46,21 @@ from auto_essay_typer.keymaps import NO_OP, Chord, format_chord, parse_chord
 
 _ALIASES = {"command": "cmd", "option": "alt", "control": "ctrl", "return": "enter"}
 _EXAMPLE = "ctrl+shift+7"
+#: The two shortcut columns grow to these widths when there is room...
 _DEFAULT_COLUMN_WIDTH = 140
 _EDIT_COLUMN_WIDTH = 200
+#: ...and give way to these when there is not, so the table never sets a floor wider than the window.
+_DEFAULT_COLUMN_MIN = 110
+_EDIT_COLUMN_MIN = 110
+#: Share of spare width each column takes, the same in every row and the header so they line up.
+_COLUMN_STRETCH = (5, 4, 6)
+
+
+def _flex_column(widget: QWidget, *, minimum: int, maximum: int) -> None:
+    """Let ``widget`` shrink to ``minimum`` and grow to ``maximum`` instead of being one fixed width."""
+    widget.setMinimumWidth(minimum)
+    widget.setMaximumWidth(maximum)
+    widget.setSizePolicy(QSizePolicy.Policy.Preferred, widget.sizePolicy().verticalPolicy())
 
 
 # --- text helpers -------------------------------------------------------------------------
@@ -130,15 +152,15 @@ class ShortcutRow(QWidget):
         # wider font (Windows text, a larger size setting) wraps the name rather than pushing the
         # page's content wider than the window.
         self.action_label.setWordWrap(True)
-        layout.addWidget(self.action_label, 1, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.action_label, _COLUMN_STRETCH[0], Qt.AlignmentFlag.AlignTop)
 
         self.default_label = QLabel()
         self.default_label.setObjectName("ShortcutDefault")
-        self.default_label.setFixedWidth(_DEFAULT_COLUMN_WIDTH)
-        layout.addWidget(self.default_label, 0, Qt.AlignmentFlag.AlignTop)
+        _flex_column(self.default_label, minimum=_DEFAULT_COLUMN_MIN, maximum=_DEFAULT_COLUMN_WIDTH)
+        layout.addWidget(self.default_label, _COLUMN_STRETCH[1], Qt.AlignmentFlag.AlignTop)
 
         right = QWidget()
-        right.setFixedWidth(_EDIT_COLUMN_WIDTH)
+        _flex_column(right, minimum=_EDIT_COLUMN_MIN, maximum=_EDIT_COLUMN_WIDTH)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(2)
@@ -155,7 +177,7 @@ class ShortcutRow(QWidget):
         self.error_label.setWordWrap(True)
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
-        layout.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(right, _COLUMN_STRETCH[2], Qt.AlignmentFlag.AlignTop)
 
     # -- configuration ---------------------------------------------------------------------------------
 
@@ -330,15 +352,15 @@ class KeymapEditor(QWidget, ThemedMixin):
         layout.setSpacing(12)
         action = QLabel("Command")
         action.setObjectName("ColumnHeader")
-        layout.addWidget(action, 1)
+        layout.addWidget(action, _COLUMN_STRETCH[0])
         default = QLabel("Default")
         default.setObjectName("ColumnHeader")
-        default.setFixedWidth(_DEFAULT_COLUMN_WIDTH)
-        layout.addWidget(default)
+        _flex_column(default, minimum=_DEFAULT_COLUMN_MIN, maximum=_DEFAULT_COLUMN_WIDTH)
+        layout.addWidget(default, _COLUMN_STRETCH[1])
         custom = QLabel("Your shortcut")
         custom.setObjectName("ColumnHeader")
-        custom.setFixedWidth(_EDIT_COLUMN_WIDTH)
-        layout.addWidget(custom)
+        _flex_column(custom, minimum=_EDIT_COLUMN_MIN, maximum=_EDIT_COLUMN_WIDTH)
+        layout.addWidget(custom, _COLUMN_STRETCH[2])
         return header
 
     def _index_of(self, target_id: str) -> int:

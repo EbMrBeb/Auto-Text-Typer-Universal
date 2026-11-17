@@ -216,16 +216,59 @@ def test_the_content_scrolls_vertically_and_never_horizontally(qtbot, qapp, tmp_
     assert page.scroll_area.widgetResizable()
 
 
-def test_the_content_fits_the_narrowest_window_without_horizontal_scrolling(qtbot, qapp, tmp_path):
+#: Body text sizes (px) the page must fit at. 13 is the app's own; the larger ones stand in for
+#: a wider UI font (Windows' text rendered 649 px of content where macOS needed 486) or a larger
+#: text-size setting. The measured page needs ~380 px at 13 and ~515 at 24.
+_STRESS_FONT_PIXELS = [13, 17, 24]
+
+
+@pytest.mark.parametrize("pixels", _STRESS_FONT_PIXELS)
+def test_the_content_fits_the_narrowest_window_without_horizontal_scrolling(qtbot, qapp, tmp_path, pixels):
     # The main window is at least 820 px wide with a 220 px sidebar: the page gets ~600 px.
     page, _backend = _make_page(qtbot, qapp, tmp_path)
+    page.setStyleSheet(f"* {{ font-size: {pixels}px; font-family: Verdana; }}")
     page.editor.expand_all()
     page.resize(600, 600)
     page.show()
     qtbot.waitExposed(page)
+    # The page must not need more than the window gives it (else it would just grow the window
+    # and the viewport comparison below would be measured against a widened page).
+    assert page.minimumSizeHint().width() <= 600
+    assert page.width() == 600
     content = page.scroll_area.widget()
     assert content.minimumSizeHint().width() <= page.scroll_area.viewport().width()
-    assert page.minimumSizeHint().width() <= 600
+
+
+def test_the_shortcut_table_gives_way_instead_of_fixing_its_column_widths(qtbot, qapp, tmp_path):
+    from auto_essay_typer.gui.keymap_editor import ShortcutRow
+
+    page, _backend = _make_page(qtbot, qapp, tmp_path)
+    rows = page.findChildren(ShortcutRow)
+    assert rows
+    # Two fixed columns (140 + 200) plus spacing used to put a 364 px floor under every row.
+    assert max(row.minimumSizeHint().width() for row in rows) < 364
+
+
+def test_the_profile_buttons_wrap_rather_than_widen_the_page(qtbot, qapp, tmp_path):
+    page, _backend = _make_page(qtbot, qapp, tmp_path)
+    page.resize(400, 600)
+    page.show()
+    qtbot.waitExposed(page)
+    buttons = [page.save_button, page.save_as_button, page.delete_button, page.reset_button]
+    assert all(button.isVisible() for button in buttons)
+    for button in buttons:  # every one is inside the page, wherever it wrapped to
+        assert button.mapTo(page, button.rect().bottomRight()).x() <= page.width()
+
+
+def test_a_combo_box_does_not_take_its_width_from_its_longest_entry(qtbot, qapp):
+    from auto_essay_typer.gui.advanced_common import NoWheelComboBox
+
+    combo = NoWheelComboBox()
+    qtbot.addWidget(combo)
+    combo.addItem("x")
+    short = combo.minimumSizeHint().width()
+    combo.addItem("A very long profile name that goes on and on and on and on")
+    assert combo.minimumSizeHint().width() == short
 
 
 # --- the profile combo ---------------------------------------------------------------------------------------

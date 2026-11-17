@@ -9,6 +9,8 @@ names there:
 * :class:`NoWheelSpinBox` / :class:`NoWheelDoubleSpinBox` / :class:`NoWheelComboBox`
   -- inputs that ignore the mouse wheel until they have keyboard focus, so
   scrolling a long page can never silently change a typing setting.
+* :class:`FlowLayout` -- a row that wraps onto more lines instead of setting a floor under
+  the window's width.
 * :func:`spin_arrow_urls` -- tinted chevron images for styled spin boxes.
 * :func:`humanize_ms` / :func:`humanize_ms_range` -- "about 20 minutes".
 * :func:`default_confirm`, :func:`default_name_prompt`,
@@ -23,12 +25,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QTransform
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QInputDialog,
+    QLayout,
+    QLayoutItem,
     QMessageBox,
     QSpinBox,
     QWidget,
@@ -103,12 +107,85 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
             event.ignore()
 
 
+#: Characters a combo box always has room for; longer entries are elided, never widen the page.
+_COMBO_MIN_CHARACTERS = 6
+
+
+class FlowLayout(QLayout):
+    """Lay widgets out left to right, starting a new line when the next does not fit.
+
+    A ``QHBoxLayout`` of buttons asks for the sum of their widths, so a wider font makes
+    the window's minimum width wider. This one asks only for its widest item and spends
+    extra height instead.
+    """
+
+    def __init__(self, parent: QWidget | None = None, *, spacing: int = 8) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._spacing = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802 - Qt override
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:  # noqa: N802 - Qt override
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802 - Qt override
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:  # noqa: N802 - Qt override
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt override
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt override
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802 - Qt override
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802 - Qt override
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect: QRect, *, apply: bool) -> int:
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x, y, line_height = area.x(), area.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x > area.x() and x + hint.width() > area.right() + 1:
+                x, y, line_height = area.x(), y + line_height + self._spacing, 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._spacing
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()
+
+
 class NoWheelComboBox(QComboBox):
     """A combo box that only reacts to the wheel while it has focus."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Sized to a fixed number of characters, not to its longest item: the default makes the
+        # combo's minimum width the longest entry's text, which a wide font (Windows) or a long
+        # profile name turns into a floor wider than the window. The popup still shows full names.
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(_COMBO_MIN_CHARACTERS)
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt override
         if self.hasFocus():

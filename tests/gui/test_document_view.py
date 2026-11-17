@@ -530,7 +530,7 @@ def test_a_change_of_font_redraws_with_the_new_sizes_and_keeps_the_readers_place
     assert place > 0
 
     bigger = view.font()
-    bigger.setPixelSize(QFontInfo(view.font()).pixelSize() + 8)
+    bigger.setPixelSize(view._base_pixel_size() + 8)
     view.setFont(bigger)
 
     after = _pixel_size(view, _blocks(view)[0])
@@ -539,3 +539,51 @@ def test_a_change_of_font_redraws_with_the_new_sizes_and_keeps_the_readers_place
         f"view reports {view.font().pixelSize()}px, QFontInfo {QFontInfo(view.font()).pixelSize()}px"
     )
     assert view.verticalScrollBar().value() > 0
+
+
+def _point_font(view: DocumentView, points: float):
+    font = view.font()
+    font.setPointSizeF(points)  # a font is in points OR pixels; this clears the pixel size
+    assert font.pixelSize() == -1
+    return font
+
+
+def test_a_font_given_in_points_is_converted_to_pixels_for_the_body_size(qtbot):
+    view = _view(qtbot, Document((_para("text"),)))
+    view.setFont(_point_font(view, 12.0))
+    expected = round(12.0 * view.screen().logicalDotsPerInchY() / 72.0)
+    assert view._base_pixel_size() == pytest.approx(expected, abs=2)
+
+
+def test_the_body_size_survives_qfontinfo_reporting_no_pixel_size(qtbot, monkeypatch):
+    """Windows CI reported QFontInfo.pixelSize() as -1; the point size must still be used."""
+    import auto_essay_typer.gui.document_view as module
+
+    class _NoPixelSize:
+        def __init__(self, _font):
+            pass
+
+        def pixelSize(self):
+            return -1
+
+    monkeypatch.setattr(module, "QFontInfo", _NoPixelSize)
+    view = _view(qtbot, Document((_para("Heading", style=ParagraphStyle.HEADING_1), _para("text"))))
+    view.setFont(_point_font(view, 12.0))
+    small = view._base_pixel_size()
+    assert small == round(12.0 * view.screen().logicalDotsPerInchY() / 72.0)
+
+    heading_before = _pixel_size(view, _blocks(view)[0])
+    view.setFont(_point_font(view, 24.0))
+    assert view._base_pixel_size() > small
+    assert _pixel_size(view, _blocks(view)[0]) > heading_before
+
+
+def test_a_font_given_in_pixels_is_used_as_given(qtbot, monkeypatch):
+    import auto_essay_typer.gui.document_view as module
+
+    view = _view(qtbot, Document((_para("text"),)))
+    monkeypatch.setattr(module, "QFontInfo", lambda _font: (_ for _ in ()).throw(AssertionError("not needed")))
+    font = view.font()
+    font.setPixelSize(21)
+    view.setFont(font)
+    assert view._base_pixel_size() == 21
