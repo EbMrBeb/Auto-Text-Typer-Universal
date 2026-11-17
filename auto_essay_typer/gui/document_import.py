@@ -78,7 +78,9 @@ def clean_source(text: str) -> str:
     if lowered.startswith(_BARE_GOOGLE_HOSTS):
         return "https://" + source
     if source.startswith("~"):
-        return os.path.expanduser(source)
+        # Path() makes the separators the system's own: "~/Documents/a.docx" on Windows
+        # would otherwise come back as "C:\\Users\\me/Documents/a.docx".
+        return str(Path(os.path.expanduser(source)))
     return source
 
 

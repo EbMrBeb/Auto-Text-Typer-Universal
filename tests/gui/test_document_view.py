@@ -500,7 +500,20 @@ def test_a_list_item_with_no_text_draws_no_marker_because_no_real_document_has_o
 
 def test_the_indent_leaves_room_for_a_three_digit_number_marker(qtbot):
     view = _view(qtbot, Document((_para("x", list_kind=ListKind.NUMBERED),)))
+    marker = view.fontMetrics().horizontalAdvance("100.")
+    assert marker < view.document().indentWidth(), f"marker {marker}px, font {view.font().toString()}"
+
+
+def test_the_indent_grows_with_a_wider_font_so_the_marker_still_has_room(qtbot):
+    # The fix for the Windows failure, stated without a Windows font: whatever the font, the
+    # marker fits; and a much larger font gets a much larger indent, not the same fixed one.
+    view = _view(qtbot, Document((_para("x", list_kind=ListKind.NUMBERED),)))
+    small = view.document().indentWidth()
+    bigger = view.font()
+    bigger.setPixelSize(60)
+    view.setFont(bigger)
     assert view.fontMetrics().horizontalAdvance("100.") < view.document().indentWidth()
+    assert view.document().indentWidth() > small
 
 
 def test_a_change_of_font_redraws_with_the_new_sizes_and_keeps_the_readers_place(qtbot):
@@ -520,5 +533,9 @@ def test_a_change_of_font_redraws_with_the_new_sizes_and_keeps_the_readers_place
     bigger.setPixelSize(QFontInfo(view.font()).pixelSize() + 8)
     view.setFont(bigger)
 
-    assert _pixel_size(view, _blocks(view)[0]) > before
+    after = _pixel_size(view, _blocks(view)[0])
+    assert after > before, (
+        f"heading {before}px -> {after}px; font {bigger.pixelSize()}px asked, "
+        f"view reports {view.font().pixelSize()}px, QFontInfo {QFontInfo(view.font()).pixelSize()}px"
+    )
     assert view.verticalScrollBar().value() > 0

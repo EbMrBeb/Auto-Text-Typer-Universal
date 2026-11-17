@@ -70,6 +70,17 @@ def test_clean_source_expands_the_home_folder():
     assert clean_source("~/Documents/essay.docx") == str(Path.home() / "Documents" / "essay.docx")
 
 
+def test_an_expanded_home_path_uses_one_kind_of_separator(monkeypatch):
+    # What Windows does: the home folder comes back with backslashes and the rest of what was
+    # typed keeps its forward slashes. Windows path semantics are stood in for with
+    # PureWindowsPath, so this runs (and means the same thing) on every OS.
+    from pathlib import PureWindowsPath
+
+    monkeypatch.setattr(document_import.os.path, "expanduser", lambda p: "C:\\Users\\me" + p[1:])
+    monkeypatch.setattr(document_import, "Path", PureWindowsPath)
+    assert clean_source("~/Documents/essay.docx") == "C:\\Users\\me\\Documents\\essay.docx"
+
+
 def test_clean_source_leaves_other_links_for_the_importer_to_reject():
     assert clean_source("https://example.com/page") == "https://example.com/page"
 
