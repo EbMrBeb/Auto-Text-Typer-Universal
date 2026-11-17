@@ -186,6 +186,14 @@ exe = EXE(  # noqa: F821
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=TARGET_ARCH,
+    # Deliberately None: the macOS signing identity (ATT_CODESIGN_IDENTITY) is
+    # applied by packaging/build_macos.sh after this spec has run. In
+    # PyInstaller 6.22 a non-None identity here is inherited by COLLECT and
+    # BUNDLE, which then sign every collected binary and the bundle with
+    # `codesign --options=runtime --timestamp`. Hardened runtime's library
+    # validation rejects the bundled Python/Qt libraries without entitlements,
+    # and --timestamp needs Apple's server. A self-signed certificate has no
+    # team, so it would fail the first and gain nothing from the second.
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH,

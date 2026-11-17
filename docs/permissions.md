@@ -30,6 +30,31 @@ Global hotkeys need **Input Monitoring** as well as Accessibility on macOS. If
 they cannot start, the main window shows a "Hotkeys unavailable" link to
 Settings; typing itself still works.
 
+### A permission that stopped working
+
+If Auto Text Typer is listed and switched on in **Accessibility** but the app
+still says it lacks permission, the grant belongs to an earlier build. An ad-hoc
+signed app has no identity of its own, so macOS records the hash of the exact
+binary you approved, and every new build has a new hash. The list entry looks
+unchanged, and switching it off and on does not update it.
+
+Clear the stale entry, then grant the permission again:
+
+1. Quit Auto Text Typer.
+2. In Terminal, run:
+
+   ```bash
+   tccutil reset Accessibility io.github.ebmrbeb.autotexttyper
+   ```
+
+3. Open Auto Text Typer and press Start (or use **Open Settings**), then turn on
+   **Auto Text Typer** in **Accessibility**.
+4. Quit and reopen the app.
+
+You can also select the entry in the Accessibility list, click **−**, and add the
+app again with **+**. To stop it recurring on every build, sign the app with a
+stable certificate: see [Code signing on macOS](building.md#code-signing-on-macos).
+
 ## Windows — no permission needed
 
 Nothing to grant. One caveat the app cannot check in advance, so it states it as

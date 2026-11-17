@@ -19,6 +19,8 @@ import sys
 import textwrap
 import threading
 
+import pytest
+
 from auto_essay_typer.gui.__main__ import collect_garbage_on_the_gui_thread, launch
 from auto_essay_typer.gui.settings_store import SettingsStore
 from auto_essay_typer.gui.theme import ThemeMode
@@ -245,3 +247,31 @@ def test_garbage_is_collected_by_a_timer_on_the_gui_thread_not_by_whichever_thre
         timer.stop()
         timer.setParent(None)
         timer.deleteLater()
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_prints_usage_and_exits_without_starting_the_app(flag, capsys, monkeypatch):
+    """--help must not open a window, load the keyboard backend or build a QApplication."""
+    from auto_essay_typer.gui import __main__ as entry
+
+    def refuse(*_a, **_k):
+        raise AssertionError("--help must exit before any app startup")
+
+    monkeypatch.setattr(entry, "preload_keyboard_backend", refuse)
+    monkeypatch.setattr(entry, "launch", refuse)
+
+    assert entry.main([flag]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: Auto Text Typer")
+    for option in ("--help", "--version", "--self-test"):
+        assert option in out
+
+
+def test_version_prints_and_exits_without_starting_the_app(capsys, monkeypatch):
+    from auto_essay_typer import __version__
+    from auto_essay_typer.gui import __main__ as entry
+
+    monkeypatch.setattr(entry, "preload_keyboard_backend", lambda: pytest.fail("--version must not start the app"))
+
+    assert entry.main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == f"Auto Text Typer {__version__}"

@@ -168,6 +168,54 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[build,gui]"
 
+      # Signing is optional. With no MACOS_CERTIFICATE secret (a fork, or a
+      # contributor's own run) none of the signing steps run and the build is
+      # ad-hoc signed exactly as before. The secret is read into a step-scoped
+      # variable here and never placed in a job-level env, so the install and
+      # build steps cannot see it.
+      - name: Check whether a signing certificate is configured
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No MACOS_CERTIFICATE secret: this build will be ad-hoc signed."
+          fi
+
+      # Imports the .p12 into a throwaway keychain, then exports the identity
+      # name to the build as ATT_CODESIGN_IDENTITY, which build_macos.sh reads.
+      # build_macos.sh fails the build if the bundle still comes out ad-hoc,
+      # so a configured certificate that does not work cannot ship silently.
+      - name: Import the code signing certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_CODESIGN_IDENTITY" ]; then
+            echo "::error::MACOS_CERTIFICATE is set but MACOS_CODESIGN_IDENTITY is not."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/att-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/att-signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/att-signing.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/att-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          echo "ATT_CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "ATT_SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build
         run: packaging/build_macos.sh
 
@@ -177,6 +225,10 @@ jobs:
       - name: Self-test the built app
         run: |
           "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer" --self-test
+
+      - name: Remove the signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$ATT_SIGNING_KEYCHAIN" || true
 
       # upload-artifact's if-no-files-found applies to the whole `path` set at
       # once, so with two globs under it the step only fails when *neither*
@@ -252,6 +304,54 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[build,gui]"
 
+      # Signing is optional. With no MACOS_CERTIFICATE secret (a fork, or a
+      # contributor's own run) none of the signing steps run and the build is
+      # ad-hoc signed exactly as before. The secret is read into a step-scoped
+      # variable here and never placed in a job-level env, so the install and
+      # build steps cannot see it.
+      - name: Check whether a signing certificate is configured
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No MACOS_CERTIFICATE secret: this build will be ad-hoc signed."
+          fi
+
+      # Imports the .p12 into a throwaway keychain, then exports the identity
+      # name to the build as ATT_CODESIGN_IDENTITY, which build_macos.sh reads.
+      # build_macos.sh fails the build if the bundle still comes out ad-hoc,
+      # so a configured certificate that does not work cannot ship silently.
+      - name: Import the code signing certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_CODESIGN_IDENTITY" ]; then
+            echo "::error::MACOS_CERTIFICATE is set but MACOS_CODESIGN_IDENTITY is not."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/att-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/att-signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/att-signing.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/att-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          echo "ATT_CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "ATT_SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build
         run: packaging/build_macos.sh
 
@@ -263,6 +363,10 @@ jobs:
       - name: Self-test the built app
         run: |
           "dist/Auto Text Typer.app/Contents/MacOS/Auto Text Typer" --self-test
+
+      - name: Remove the signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$ATT_SIGNING_KEYCHAIN" || true
 
       - name: Verify every macOS x86_64 artifact was produced
         shell: bash

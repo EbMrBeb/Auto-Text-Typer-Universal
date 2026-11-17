@@ -244,8 +244,24 @@ def launch(
     return window, shell
 
 
+USAGE = f"""usage: {APP_NAME} [--help] [--version] [--self-test]
+
+Opens the {APP_NAME} window.
+
+options:
+  -h, --help   print this message and exit
+  --version    print the version and exit
+  --self-test  type a sample sentence through the real typing pipeline into a
+               recording keyboard, report the result and exit (no window is shown)
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+
+    if "-h" in argv or "--help" in argv:
+        print(USAGE, end="")
+        return 0
 
     if "--version" in argv:
         print(f"{APP_NAME} {__version__}")
