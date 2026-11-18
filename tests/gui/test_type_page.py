@@ -330,7 +330,11 @@ def test_text_and_quick_settings_are_disabled_while_running(qtbot, qapp):
     assert page.run_panel_widget.isHidden() is False
 
     controller.stop()
-    qtbot.waitSignal(controller.finished, timeout=5000).wait()
+    # Polled, not awaited. `finished` is emitted from the typing thread, which here is one
+    # 10ms sleep away from reporting the abort -- and Qt delivers such an emission only to
+    # the connections that existed when it was emitted, so a `waitSignal` that connects
+    # afterwards waits out its whole timeout for a signal it was never sent.
+    qtbot.waitUntil(lambda: not controller.is_busy, timeout=5000)
 
 
 # --- pause / resume / stop, driven through the page's own buttons ---------------------
@@ -362,8 +366,8 @@ def test_pause_resume_button_toggles_the_running_driver(qtbot, qapp):
     page._on_pause_resume_clicked()  # now resumes, with a countdown
     assert controller.state == "resuming"
 
-    qtbot.waitUntil(lambda: controller.state == "typing", timeout=5000)
-    qtbot.waitSignal(controller.finished, timeout=5000).wait()
+    qtbot.waitUntil(lambda: controller.state == "typing", timeout=5000)  # the resume took effect
+    qtbot.waitUntil(lambda: not controller.is_busy, timeout=5000)  # polled, as above
     assert keyboard.text == "pause and resume this run please"
 
 

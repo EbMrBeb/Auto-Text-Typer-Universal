@@ -7,11 +7,20 @@ a recording keyboard and look at what ended up typed, and at which prompts were 
 not) shown. The clipboard, the permission dialog, the confirmation and the notifications are
 all injected; nothing real is typed, shown or read.
 
-A note on waiting. ``RunController`` emits ``finished`` from its typing thread. If a test
-fails *inside* a ``qtbot.waitSignal`` block, the block is abandoned while that thread is still
-about to emit into it, and PySide then crashes the whole run delivering the late signal to a
-freed receiver. So everything that can fail happens outside the block: ``_run`` does nothing
-but start the run and wait for it, and the assertions follow.
+A note on waiting. ``RunController`` emits ``finished`` from its typing thread, and Qt
+delivers such an emission only to the connections that existed when it was emitted. So no
+test here connects a listener at the moment it decides to wait: a run that ended an instant
+earlier was already delivered -- to nobody -- and no timeout can wait that out. Instead
+``_window`` connects a :class:`FinishedRuns` record before any run can start, and ``_run``
+and ``_finish`` poll that record with ``qtbot.waitUntil``, which spins the event loop
+(delivering whatever was queued) and only then looks.
+
+That also keeps a crash away. If a test failed *inside* a ``qtbot.waitSignal`` block, the
+block was abandoned while the typing thread was still about to emit into it, and PySide then
+crashed the whole run delivering the late signal to a freed receiver. So nothing that can
+fail belongs inside a wait: ``_run`` does nothing but start the run and wait for it, and the
+assertions follow. The record outlives every wait -- the controller owns it -- so a late
+emission always has a live receiver.
 """
 
 from __future__ import annotations
@@ -20,7 +29,7 @@ import threading
 
 import pytest
 import shiboken6
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QObject, QSettings, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from auto_essay_typer.driver import Driver, RecordingKeyboard
@@ -54,8 +63,13 @@ class Gate:
         self.calls = 0
         self.blocked = threading.Event()
         self.release = threading.Event()
+        #: The typing thread, once the run has reached its first sleep. Joining it is how a
+        #: test waits for a released run to have *finished reporting*: ``finished`` is the
+        #: last thing the controller's worker emits before that thread ends.
+        self.worker: threading.Thread | None = None
 
     def sleep(self, _seconds: float) -> None:
+        self.worker = threading.current_thread()
         self.calls += 1
         if self.until is not None:
             parked = self.until()
@@ -82,6 +96,33 @@ def _gated_factory(gate, keyboards):
     return factory
 
 
+class FinishedRuns(QObject):
+    """Every ``(outcome, message)`` a run controller has reported, in order.
+
+    Connected by :func:`_window` before any run can start, which is the point: a run can
+    then end at any moment without the ending going unobserved, so a test is free to
+    decide *afterwards* that it wants to wait. See the note on waiting in the module
+    docstring for why connecting a listener at that later moment loses the emission.
+
+    It is a child of the controller, so it is alive for exactly as long as the object that
+    emits into it -- a late emission reaches a live receiver, never a freed one.
+    """
+
+    def __init__(self, controller) -> None:
+        super().__init__(controller)
+        self._runs: list[tuple[str, str]] = []
+        controller.finished.connect(self._record)
+
+    def _record(self, outcome: str, message: str) -> None:
+        self._runs.append((outcome, message))
+
+    def __len__(self) -> int:
+        return len(self._runs)
+
+    def __getitem__(self, index: int) -> tuple[str, str]:
+        return self._runs[index]
+
+
 def _window(qtbot, qapp, tmp_path, driver_factory, *, permission_checker=granted, **store_settings):
     store = SettingsStore(tmp_path / "settings.json")
     if store_settings:
@@ -94,6 +135,8 @@ def _window(qtbot, qapp, tmp_path, driver_factory, *, permission_checker=granted
         settings_store=store,
     )
     qtbot.addWidget(window)
+    # Listening from here on, before anything can start a run, so no ending is ever missed.
+    window.finished_runs = FinishedRuns(window.run_controller)
     return window
 
 
@@ -117,20 +160,28 @@ def _run(qtbot, window, start):
 
     Returns ``(what start() returned, the run's (outcome, message))``. Nothing here can fail
     while the wait is open -- see the module docstring.
+
+    The count of already-reported runs is taken before ``start()``, so the run waited for is
+    this one however many the window has typed before it.
     """
-    with qtbot.waitSignal(window.run_controller.finished, timeout=8000) as blocker:
-        result = start()
-    return result, tuple(blocker.args)
+    runs = window.finished_runs
+    before = len(runs)
+    result = start()
+    qtbot.waitUntil(lambda: len(runs) > before, timeout=8000)
+    return result, runs[before]
 
 
 def _finish(qtbot, window):
-    """Wait for the run in flight (if any) to end; ``(outcome, message)``, or ``None`` if none was."""
-    controller = window.run_controller
-    if not controller.is_busy:
-        return None
-    with qtbot.waitSignal(controller.finished, timeout=8000) as blocker:
-        pass
-    return tuple(blocker.args)
+    """Wait for the run in flight to end; how the window's last run ended, ``(outcome, message)``.
+
+    Reads the record :func:`_window` began before any run could, so a run that ended before
+    this call was ever made -- the race the module docstring describes -- is already in it.
+    Waiting for the controller to go idle as well means the answer is the run in flight, not
+    an earlier one, whenever a test asks after starting several.
+    """
+    runs = window.finished_runs
+    qtbot.waitUntil(lambda: not window.run_controller.is_busy and len(runs) > 0, timeout=8000)
+    return runs[-1]
 
 
 # --- starting from the clipboard -------------------------------------------------------------------------------
@@ -542,6 +593,81 @@ def test_the_stop_hotkey_does_nothing_unless_a_run_is_in_flight(qtbot, qapp, tmp
     actions.stop_if_running()  # now it counts
     gate.release.set()
     assert _finish(qtbot, window) == ("stopped", "Stopped.")
+
+
+# --- the helpers that wait for a run -------------------------------------------------------------------------------------------------
+
+
+class _ControllerThatWasBusyAMomentAgo:
+    """The real run controller, answering its *first* ``is_busy`` read as it did when built.
+
+    That one stale answer is the whole race: it is what tells a helper "a run is in
+    flight, start waiting for it" about a run that has already reported. Every later
+    read is the truth, so a helper that keeps looking recovers immediately.
+    """
+
+    def __init__(self, controller) -> None:
+        self._controller = controller
+        self._as_built = controller.is_busy
+        self.finished = controller.finished
+
+    @property
+    def is_busy(self) -> bool:
+        if self._as_built is None:
+            return self._controller.is_busy
+        as_built, self._as_built = self._as_built, None
+        return as_built
+
+
+class _WindowWhoseRunEndedInTheGap:
+    """``window`` as a waiting helper sees it when the run ended in the gap it cannot cover.
+
+    On a loaded CI machine the typing thread can end a run -- clearing ``is_busy`` and
+    emitting ``finished`` -- in the moment between a helper asking "is a run in flight?"
+    and that helper connecting the listener it means to wait on. Building this ends the
+    run in flight for real, and leaves ``is_busy`` answering what it truthfully was an
+    instant earlier, so the gap is closed deterministically instead of by luck.
+    """
+
+    def __init__(self, window, end_the_run) -> None:
+        self._window = window
+        self._controller = _ControllerThatWasBusyAMomentAgo(window.run_controller)
+        end_the_run()
+
+    @property
+    def run_controller(self):
+        return self._controller
+
+    def __getattr__(self, name):
+        return getattr(self._window, name)
+
+
+def test_waiting_for_a_run_to_end_still_sees_one_that_ended_before_the_wait_began(
+    qtbot, qapp, tmp_path, gate
+):
+    """The CI flake, as a test: ``_finish`` must not be able to miss a run that already ended.
+
+    ``RunController`` emits ``finished`` from its typing thread, and Qt delivers such an
+    emission only to the connections that existed when it was emitted. A helper that
+    connects its listener *after* deciding to wait is therefore not listening yet when a
+    run ends in that gap, and the emission is never delivered to it -- which is why the
+    failure is a timeout, and why no larger timeout can fix it.
+    """
+    keyboards: list[RecordingKeyboard] = []
+    window = _window(qtbot, qapp, tmp_path, _gated_factory(gate, keyboards), confirm_before_typing=False)
+    actions, *_ = _actions(window)
+
+    actions.start_from_clipboard()
+    assert gate.blocked.wait(5)  # the run is genuinely in flight, parked mid-sleep
+    actions.stop()
+
+    def end_the_run() -> None:
+        """Let the parked run finish and report, all of it, before the helper looks."""
+        gate.release.set()
+        gate.worker.join(5)
+        assert not gate.worker.is_alive(), "the typing thread never finished the run"
+
+    assert _finish(qtbot, _WindowWhoseRunEndedInTheGap(window, end_the_run)) == ("stopped", "Stopped.")
 
 
 # --- the default side effects ------------------------------------------------------------------------------------------------------
