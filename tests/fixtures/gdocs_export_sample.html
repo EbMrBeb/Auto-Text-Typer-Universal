@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sample Document Title</title>
+<style type="text/css">
+.lst-kix_abc123-0>li:before{content:"\0025cf  "}
+ul.lst-kix_abc123-0{list-style-type:none}
+.lst-kix_abc123-1>li:before{content:"\0025cb  "}
+ul.lst-kix_abc123-1{list-style-type:none}
+.lst-kix_def456-0>li:before{content:counter(lst-ctn-kix_def456-0,decimal) ". "}
+ol.lst-kix_def456-0{list-style-type:none}
+.c0{font-weight:700;font-style:normal}
+.c1{font-style:italic}
+.c2{text-decoration:underline}
+.c3{text-decoration:line-through}
+.c4{text-align:center}
+.c5{text-align:right}
+.c6{font-family:"Courier New";font-size:16pt;color:#ff0000}
+</style>
+</head>
+<body class="doc-content">
+<p class="title"><span class="c0">Sample Document Title</span></p>
+<p class="subtitle"><span class="c1">A subtitle, italicized by its own span</span></p>
+<h1 id="h.heading1">Section One</h1>
+<h2 id="h.heading2">Subsection A</h2>
+<h3 id="h.heading3">Detail</h3>
+<p><span class="c0">Bold, </span><span class="c1">italic, </span><span class="c2">underlined, </span><span class="c3">struck through</span><span>, and plain.</span></p>
+<p class="c4">This paragraph is centered.</p>
+<p class="c5">This paragraph is right-aligned.</p>
+<ul class="lst-kix_abc123-0 start"><li><span>Top-level bullet item</span></li></ul>
+<ul class="lst-kix_abc123-1 start"><li><span>Nested bullet item</span></li></ul>
+<ol class="lst-kix_def456-0 start"><li><span>First numbered item</span></li></ol>
+<p><span>Visit </span><a href="https://example.com/" class="c0">our page</a><span> for more.</span></p>
+<p><span><img src="image.png" alt="a diagram"/></span></p>
+<table><tbody><tr><td><p><span>A1</span></p></td><td><p><span>B1</span></p></td></tr><tr><td><p><span>A2</span></p></td><td><p><span>B2</span></p></td></tr></tbody></table>
+<p><span>Non-breaking&nbsp;space right here.</span></p>
+<p class="c6"><span class="c6">Custom font, size, and colour.</span></p>
+<div id="footnotes"><p class="footnote"><a id="ftnt1" href="#ftnt_ref1">1</a> A footnote that should not appear in the typed document.</p></div>
+</body>
+</html>

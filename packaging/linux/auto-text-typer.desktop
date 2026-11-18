@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Auto Text Typer
+Comment=Types your text into the focused window with human-like timing
+Exec=auto-text-typer
+Icon=auto-text-typer
+Categories=Utility;Office;
+Terminal=false
+StartupWMClass=auto-text-typer

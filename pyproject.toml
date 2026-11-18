@@ -1,0 +1,45 @@
+[project]
+name = "auto-text-typer"
+version = "0.1.0"
+description = "Types supplied text into any application with human-like rhythm and self-corrected mistakes"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["pynput>=1.8", "truststore>=0.10", "certifi>=2024.2.2"]
+
+[project.scripts]
+auto-text-typer = "auto_essay_typer.cli:main"
+
+[project.gui-scripts]
+auto-text-typer-gui = "auto_essay_typer.gui.__main__:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "pytest-qt>=4"]
+# Capped just above the last release whose binaries were measured (6.11.2). The
+# macosx_N_0 tag on a PySide6 wheel only describes Qt's own libraries; the
+# binding modules in the same wheel are built for a newer macOS (15.0 in
+# 6.11.2), and that is the number LSMinimumSystemVersion in
+# packaging/pyinstaller/auto_text_typer.spec has to match. Re-measure, using
+# the command in that spec, before raising the cap.
+gui = ["PySide6-Essentials>=6.8,<6.11.3"]
+build = ["pyinstaller>=6.12", "Pillow>=10", "pyyaml>=6"]
+
+[build-system]
+# >=77 for PEP 639: the SPDX `license = "MIT"` string and `license-files`
+# above are a hard error on older setuptools, which only accepted the
+# now-deprecated `license = {text = "..."}` table form.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["auto_essay_typer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "network: opt-in test that makes a real network request (set ATT_NETWORK_TESTS=1 to run)",
+]
+
+[tool.coverage.report]
+fail_under = 80
