@@ -86,6 +86,26 @@ jobs:
       # runs pytest itself under Xvfb below for pynput's X11 backend,
       # which does not honor QT_QPA_PLATFORM at all.
       QT_QPA_PLATFORM: offscreen
+      # Windows only: without this, Qt finds no fonts at all on that leg.
+      #
+      # The offscreen plugin builds a QFreeTypeFontDatabase, which enumerates a
+      # single directory -- QT_QPA_FONTDIR, or else Qt's own lib/fonts, which the
+      # PySide6 wheels do not ship. Linux has fontconfig to fall back on and macOS
+      # has CoreText; Windows has neither here, so QFontDatabase.families() comes
+      # back empty even though Segoe UI, Tahoma and Arial are all installed. Qt
+      # then measures text with a fallback box font one em per character wide,
+      # roughly twice a real proportional face, and every width the GUI tests
+      # assert becomes meaningless: the Advanced page reported 649 px of content
+      # where it actually needs 451. Pointed at the system font directory, that
+      # leg sees 56 families and its metrics agree with the native DirectWrite
+      # ones to within 3 px.
+      #
+      # Keyed off matrix.os rather than runner.os because the runner context is
+      # not available in a job-level env block -- only in steps -- so runner.os
+      # would read empty here and the path would never be set on any leg. An
+      # empty value is equivalent to unset, since Qt's fontDir() tests
+      # isEmpty() and falls back, so the other four legs are untouched.
+      QT_QPA_FONTDIR: ${{ startsWith(matrix.os, 'windows') && 'C:\Windows\Fonts' || '' }}
     steps:
       - uses: actions/checkout@v7
 

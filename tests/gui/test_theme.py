@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -303,6 +304,26 @@ def test_permission_chip_is_a_true_pill(qtbot, qapp):
 _MAC = ".AppleSystemUIFont", "Helvetica Neue", "Helvetica", "Arial"
 
 
+def _no_font_remedy() -> str:
+    """How to give *this* CI runner a usable UI font.
+
+    The remedies differ in kind, so one sentence cannot serve all three runners.
+    Linux genuinely has no font until a package installs one, because Qt reaches
+    /usr/share/fonts through fontconfig. Windows already has Segoe UI, Tahoma and
+    Arial, and no package would help: under the offscreen plugin Qt builds a
+    QFreeTypeFontDatabase, which enumerates only the directory QT_QPA_FONTDIR
+    names (falling back to Qt's own lib/fonts, absent from the PySide6 wheels),
+    so the fonts are there and Qt simply never looks at them.
+    """
+    if sys.platform.startswith("linux"):
+        return "install a font package in the CI workflow (fonts-dejavu-core)"
+    if sys.platform == "win32":
+        return r"point QT_QPA_FONTDIR at C:\Windows\Fonts in the CI workflow"
+    if sys.platform == "darwin":
+        return "give the CI runner a UI font (Helvetica or Arial)"
+    return "give the CI runner one of the app's preferred UI families"
+
+
 def test_font_families_are_filtered_to_those_that_exist():
     families = resolve_ui_font_families(OperatingSystem.MACOS, ["Helvetica", "Zapfino"])
     assert families == ["Helvetica"]
@@ -375,12 +396,36 @@ def test_app_font_is_pixel_sized_so_it_matches_on_every_os(qtbot, qapp):
     assert font.families() == ["Segoe UI", "Arial"]
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        ("linux", "fonts-dejavu-core"),
+        ("win32", "QT_QPA_FONTDIR"),
+        ("darwin", "Helvetica"),
+        ("freebsd14", "preferred UI families"),
+    ],
+)
+def test_the_no_font_failure_names_the_remedy_for_that_platform(monkeypatch, platform, expected):
+    monkeypatch.setattr("sys.platform", platform)
+    assert expected in _no_font_remedy()
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_the_no_font_failure_never_advises_an_apt_package_off_linux(monkeypatch, platform):
+    # It used to advise fonts-dejavu-core on every runner. On Windows that named a package
+    # that cannot be installed, for a font that was already there and would not have helped:
+    # the fonts were present and the offscreen plugin was not looking at them.
+    monkeypatch.setattr("sys.platform", platform)
+    assert "dejavu" not in _no_font_remedy().casefold()
+
+
 def test_theme_manager_installs_a_font_that_really_exists(qtbot, qapp):
     if build_app_font() is None:
         message = "none of the preferred UI font families is installed on this machine"
         if os.environ.get("CI"):
             # A skip here would turn the check into no signal at all; CI images must carry a font.
-            pytest.fail(f"{message}; install one in the CI workflow (fonts-dejavu-core)")
+            # This is what caught the Windows runner enumerating none of its own fonts.
+            pytest.fail(f"{message}; {_no_font_remedy()}")
         pytest.skip(message)
     ThemeManager(qapp)
     assert qapp.font().family() in QFontDatabase.families()
